@@ -23,6 +23,7 @@
   }
 
   type TreeNode = {
+    key: string
     node: AddressNode
     depth: number
     expanded: boolean
@@ -58,6 +59,7 @@
   type DiagnosticLogEntry = { timestamp: string; level: string; message: string }
 
   const objectsRoot: TreeNode = {
+    key: 'root:i=85',
     node: { NodeID: 'i=85', DisplayName: 'Objects', BrowseName: 'Objects', NodeClass: 'Object' },
     depth: 0,
     expanded: false,
@@ -174,7 +176,7 @@
   }
 
   async function toggleNode(item: TreeNode) {
-    const index = tree.findIndex(entry => entry.node.NodeID === item.node.NodeID)
+    const index = tree.findIndex(entry => entry.key === item.key)
     if (index < 0) return
     if (tree[index].childrenLoaded) {
       tree[index].expanded = !tree[index].expanded
@@ -186,12 +188,15 @@
     tree = [...tree]
     try {
       const children: AddressNode[] = await BrowseChildren(item.node.NodeID)
-      const childNodes: TreeNode[] = children.map(child => ({ node: child, depth: item.depth + 1, expanded: false, childrenLoaded: false, loading: false, error: '' }))
+      const childNodes: TreeNode[] = children.map((child, childIndex) => ({ key: `${item.key}/${child.NodeID || child.BrowseName || child.DisplayName}:${childIndex}`, node: child, depth: item.depth + 1, expanded: false, childrenLoaded: false, loading: false, error: '' }))
       const end = subtreeEnd(index)
       tree = [...tree.slice(0, index + 1), ...childNodes, ...tree.slice(end)]
       tree[index].expanded = true
       tree[index].childrenLoaded = true
       tree[index].loading = false
+      if (childNodes.length === 0) {
+        tree[index].error = 'No child nodes'
+      }
       tree = [...tree]
     } catch (error) {
       tree[index].loading = false
@@ -210,12 +215,20 @@
     }
   }
 
+  async function activateNode(item: TreeNode) {
+    await selectNode(item)
+    if (item.node.NodeClass !== 'Variable') {
+      await toggleNode(item)
+    }
+  }
+
   function isHidden(index: number) {
-    const item = tree[index]
-    for (let cursor = index - 1; cursor >= 0; cursor--) {
+    let depth = tree[index].depth
+    for (let cursor = index - 1; cursor >= 0 && depth > 0; cursor--) {
       const ancestor = tree[cursor]
-      if (ancestor.depth < item.depth) {
+      if (ancestor.depth < depth) {
         if (!ancestor.expanded) return true
+        depth = ancestor.depth
       }
     }
     return false
@@ -233,10 +246,10 @@
     return new Date(value).toLocaleTimeString()
   }
 
-  function navClass(tab: Tab) {
-    return activeTab === tab
-      ? 'bg-secondary-container text-on-secondary-container border-primary'
-      : 'text-on-surface-variant border-transparent hover:bg-surface-container-highest'
+  function navButtonClass(active: boolean) {
+    return active
+      ? 'flex w-full items-center gap-md rounded border-l-2 px-md py-sm text-left transition-colors bg-primary-container text-background border-primary-container font-bold'
+      : 'flex w-full items-center gap-md rounded border-l-2 px-md py-sm text-left transition-colors text-on-surface-variant border-transparent hover:bg-surface-container-highest'
   }
 </script>
 
@@ -255,23 +268,23 @@
     </div>
 
     <nav class="flex-1 space-y-xs overflow-y-auto px-md py-md">
-      <button class="flex w-full items-center gap-md rounded border-l-2 px-md py-sm text-left transition-colors {navClass('connections')}" on:click={() => (activeTab = 'connections')}>
+      <button class={navButtonClass(activeTab === 'connections')} on:click={() => (activeTab = 'connections')}>
         <span class="material-symbols-outlined">settings_input_component</span><span class="label text-current">Connection Manager</span>
       </button>
-      <button class="flex w-full items-center gap-md rounded border-l-2 px-md py-sm text-left transition-colors {navClass('address-space')}" on:click={() => (activeTab = 'address-space')}>
+      <button class={navButtonClass(activeTab === 'address-space')} on:click={() => (activeTab = 'address-space')}>
         <span class="material-symbols-outlined">account_tree</span><span class="label text-current">Address Space</span>
       </button>
-      <button class="flex w-full items-center gap-md rounded border-l-2 px-md py-sm text-left transition-colors {navClass('live-monitor')}" on:click={() => (activeTab = 'live-monitor')}>
+      <button class={navButtonClass(activeTab === 'live-monitor')} on:click={() => (activeTab = 'live-monitor')}>
         <span class="material-symbols-outlined">analytics</span><span class="label text-current">Live Monitor</span>
       </button>
-      <button class="flex w-full items-center gap-md rounded border-l-2 px-md py-sm text-left transition-colors {navClass('trends')}" on:click={() => (activeTab = 'trends')}>
+      <button class={navButtonClass(activeTab === 'trends')} on:click={() => (activeTab = 'trends')}>
         <span class="material-symbols-outlined">show_chart</span><span class="label text-current">Trend Dashboard</span>
       </button>
     </nav>
 
     <div class="space-y-sm border-t border-outline-variant px-md pt-md">
       <button class="btn-secondary flex w-full items-center justify-center gap-sm" disabled><span class="material-symbols-outlined text-sm">add</span>Add New Server</button>
-      <button class="flex w-full items-center gap-md rounded px-md py-sm text-left text-on-surface-variant transition-colors hover:bg-surface-container-highest" on:click={() => (activeTab = 'logs')}>
+      <button class={navButtonClass(activeTab === 'logs')} on:click={() => (activeTab = 'logs')}>
         <span class="material-symbols-outlined">terminal</span><span class="label text-current">Diagnostic Logs</span>
       </button>
     </div>
@@ -366,12 +379,12 @@
               {#if !connected}
                 <div class="p-lg text-on-surface-variant">Connect to an OPC UA Server to browse its Address Space.</div>
               {:else}
-                {#each visibleTree as item}
+                {#each visibleTree as item (item.key)}
                   <div class="group flex items-center gap-xs rounded px-sm py-xs hover:bg-surface-container-high" style={`padding-left: ${8 + item.depth * 18}px`}>
                     <button class="flex h-6 w-6 items-center justify-center rounded hover:bg-surface-container-highest" on:click={() => toggleNode(item)} title="Expand or collapse">
                       {#if item.loading}<span class="text-xs text-primary">…</span>{:else}<span class="material-symbols-outlined text-[18px]">{item.expanded ? 'expand_more' : 'chevron_right'}</span>{/if}
                     </button>
-                    <button class="min-w-0 flex-1 truncate rounded px-xs py-xs text-left {selectedNodeID === item.node.NodeID ? 'bg-secondary-container text-on-secondary-container' : 'text-on-surface'}" on:click={() => selectNode(item)}>
+                    <button class="min-w-0 flex-1 truncate rounded px-xs py-xs text-left {selectedNodeID === item.node.NodeID ? 'bg-secondary-container text-on-secondary-container' : 'text-on-surface'}" on:click={() => activateNode(item)}>
                       <span class="mr-sm font-medium">{item.node.DisplayName}</span><span class="font-mono text-xs text-on-surface-variant">{item.node.NodeClass}</span>
                     </button>
                   </div>

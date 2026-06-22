@@ -14,6 +14,7 @@ import (
 
 const (
 	eventVariableInspectionUpdated = "variable-inspection-updated"
+	eventWatchlistUpdated          = "watchlist-updated"
 	eventDiagnosticLogAppended     = "diagnostic-log-appended"
 )
 
@@ -63,8 +64,21 @@ type VariableNodeInspectionView struct {
 	Stale          bool              `json:"stale"`
 	OutOfRange     string            `json:"outOfRange"`
 	UpdateCount    int               `json:"updateCount"`
+	Watched        bool              `json:"watched"`
 	Error          string            `json:"error"`
 	DetailsError   string            `json:"detailsError"`
+}
+
+type WatchlistRowView struct {
+	Node            opcua.AddressNode `json:"node"`
+	Value           opcua.LiveValue   `json:"value"`
+	DataType        string            `json:"dataType"`
+	EngineeringUnit string            `json:"engineeringUnit"`
+	Stale           bool              `json:"stale"`
+	OutOfRange      string            `json:"outOfRange"`
+	UpdateCount     int               `json:"updateCount"`
+	Error           string            `json:"error"`
+	DetailsError    string            `json:"detailsError"`
 }
 
 func (a *App) DiscoverEndpoints(endpoint string) ([]opcua.Endpoint, error) {
@@ -97,6 +111,7 @@ func (a *App) Connect(request ConnectionRequest) error {
 	a.inspections = session.NewInspectionSet()
 	a.mu.Unlock()
 	a.emitInspection(nil)
+	a.emitWatchlist()
 	a.appendLog("info", "Connected")
 	return nil
 }
@@ -113,6 +128,7 @@ func (a *App) Disconnect() error {
 	a.connected = false
 	a.mu.Unlock()
 	a.emitInspection(nil)
+	a.emitWatchlist()
 	a.appendLog("info", "Disconnected")
 	return nil
 }
@@ -154,6 +170,41 @@ func (a *App) ClearVariableNodeInspection() error {
 	return nil
 }
 
+func (a *App) WatchVariableNode(node opcua.AddressNode) error {
+	if node.NodeClass != "Variable" {
+		return fmt.Errorf("only Variable Nodes can be added to the Watchlist")
+	}
+	a.appendLog("info", fmt.Sprintf("Adding Variable Node %s to Watchlist", node.NodeID))
+	a.mu.Lock()
+	requests := a.inspections.Watch(node)
+	rows := a.watchlistLocked()
+	view := a.currentInspectionLocked()
+	a.mu.Unlock()
+	a.emitInspection(view)
+	a.emitWatchlistRows(rows)
+	a.executeInspectionRequests(requests)
+	return nil
+}
+
+func (a *App) UnwatchVariableNode(nodeID string) error {
+	a.appendLog("info", fmt.Sprintf("Removing Variable Node %s from Watchlist", nodeID))
+	a.mu.Lock()
+	requests := a.inspections.Unwatch(nodeID)
+	rows := a.watchlistLocked()
+	view := a.currentInspectionLocked()
+	a.mu.Unlock()
+	a.emitInspection(view)
+	a.emitWatchlistRows(rows)
+	a.executeInspectionRequests(requests)
+	return nil
+}
+
+func (a *App) GetWatchlist() []WatchlistRowView {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.watchlistLocked()
+}
+
 func (a *App) GetDiagnosticLogs() []DiagnosticLogEntry {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -183,11 +234,13 @@ func (a *App) subscribeValue(nodeID string) {
 	a.mu.Lock()
 	requests := a.inspections.ApplySubscription(nodeID, updates, subscription, err)
 	view := a.currentInspectionLocked()
+	rows := a.watchlistLocked()
 	a.mu.Unlock()
 	if err != nil {
 		a.appendLog("error", fmt.Sprintf("Subscribe failed for %s: %v", nodeID, err))
 	}
 	a.emitInspection(view)
+	a.emitWatchlistRows(rows)
 	a.executeInspectionRequests(requests)
 	if err != nil || updates == nil {
 		return
@@ -196,8 +249,10 @@ func (a *App) subscribeValue(nodeID string) {
 		a.mu.Lock()
 		requests := a.inspections.ApplyLiveValue(nodeID, value, nil)
 		view := a.currentInspectionLocked()
+		rows := a.watchlistLocked()
 		a.mu.Unlock()
 		a.emitInspection(view)
+		a.emitWatchlistRows(rows)
 		a.executeInspectionRequests(requests)
 	}
 }
@@ -207,11 +262,13 @@ func (a *App) readNodeDetails(nodeID string) {
 	a.mu.Lock()
 	a.inspections.ApplyDetails(nodeID, details, err)
 	view := a.currentInspectionLocked()
+	rows := a.watchlistLocked()
 	a.mu.Unlock()
 	if err != nil {
 		a.appendLog("error", fmt.Sprintf("Read details failed for %s: %v", nodeID, err))
 	}
 	a.emitInspection(view)
+	a.emitWatchlistRows(rows)
 }
 
 func (a *App) currentInspectionLocked() *VariableNodeInspectionView {
@@ -233,6 +290,7 @@ func inspectionView(inspection session.VariableNodeInspection) VariableNodeInspe
 		Stale:          inspection.Stale,
 		OutOfRange:     inspection.OutOfRange,
 		UpdateCount:    inspection.UpdateCount,
+		Watched:        inspection.Watched,
 	}
 	if inspection.Err != nil {
 		view.Error = inspection.Err.Error()
@@ -243,9 +301,50 @@ func inspectionView(inspection session.VariableNodeInspection) VariableNodeInspe
 	return view
 }
 
+func watchlistRowView(inspection session.VariableNodeInspection) WatchlistRowView {
+	row := WatchlistRowView{
+		Node:            inspection.Node,
+		Value:           inspection.Value,
+		DataType:        inspection.Details.DataType,
+		EngineeringUnit: inspection.Details.EngineeringUnit,
+		Stale:           inspection.Stale,
+		OutOfRange:      inspection.OutOfRange,
+		UpdateCount:     inspection.UpdateCount,
+	}
+	if inspection.Err != nil {
+		row.Error = inspection.Err.Error()
+	}
+	if inspection.DetailsErr != nil {
+		row.DetailsError = inspection.DetailsErr.Error()
+	}
+	return row
+}
+
+func (a *App) watchlistLocked() []WatchlistRowView {
+	watched := a.inspections.Watched()
+	rows := make([]WatchlistRowView, 0, len(watched))
+	for _, inspection := range watched {
+		rows = append(rows, watchlistRowView(inspection))
+	}
+	return rows
+}
+
 func (a *App) emitInspection(view *VariableNodeInspectionView) {
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, eventVariableInspectionUpdated, view)
+	}
+}
+
+func (a *App) emitWatchlist() {
+	a.mu.Lock()
+	rows := a.watchlistLocked()
+	a.mu.Unlock()
+	a.emitWatchlistRows(rows)
+}
+
+func (a *App) emitWatchlistRows(rows []WatchlistRowView) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, eventWatchlistUpdated, rows)
 	}
 }
 

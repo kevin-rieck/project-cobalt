@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, InspectVariableNode } from '../wailsjs/go/main/App.js'
+  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetWatchlist, InspectVariableNode, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
 
-  type Tab = 'connections' | 'address-space' | 'live-monitor' | 'trends' | 'logs'
+  type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
   type AuthType = 'Anonymous' | 'UserName'
 
   type Endpoint = {
@@ -52,6 +52,19 @@
     stale: boolean
     outOfRange: string
     updateCount: number
+    watched: boolean
+    error: string
+    detailsError: string
+  }
+
+  type WatchlistRow = {
+    node: AddressNode
+    value: { Value: string; Status: string; SourceTimestamp: string; ServerTimestamp: string }
+    dataType: string
+    engineeringUnit: string
+    stale: boolean
+    outOfRange: string
+    updateCount: number
     error: string
     detailsError: string
   }
@@ -83,6 +96,7 @@
   let tree: TreeNode[] = [{ ...objectsRoot }]
   let selectedNodeID = ''
   let inspection: Inspection | null = null
+  let watchlist: WatchlistRow[] = []
   let logs: DiagnosticLogEntry[] = []
   let toasts: { id: number; level: string; message: string }[] = []
 
@@ -93,14 +107,22 @@
 
   onMount(async () => {
     logs = await GetDiagnosticLogs()
+    watchlist = await GetWatchlist()
     const offInspection = EventsOn('variable-inspection-updated', (payload: Inspection | null) => {
       inspection = payload
+    })
+    const offWatchlist = EventsOn('watchlist-updated', (payload: WatchlistRow[]) => {
+      watchlist = payload || []
+      if (watchlist.length > 100) {
+        addToast('info', 'Watchlist has more than 100 Variable Nodes. Consider removing nodes you no longer need.')
+      }
     })
     const offLog = EventsOn('diagnostic-log-appended', (entry: DiagnosticLogEntry) => {
       logs = [...logs, entry].slice(-500)
     })
     return () => {
       offInspection()
+      offWatchlist()
       offLog()
     }
   })
@@ -150,6 +172,7 @@
       tree = [{ ...objectsRoot }]
       selectedNodeID = ''
       inspection = null
+      watchlist = []
       activeTab = 'address-space'
       addToast('info', 'Connected')
     } catch (error) {
@@ -168,6 +191,7 @@
       tree = [{ ...objectsRoot }]
       selectedNodeID = ''
       inspection = null
+      watchlist = []
       activeTab = 'connections'
       addToast('info', 'Disconnected')
     } catch (error) {
@@ -222,6 +246,31 @@
     }
   }
 
+  async function addSelectedToWatchlist() {
+    if (!inspection) return
+    try {
+      await WatchVariableNode(inspection.node)
+      addToast('info', 'Added to Watchlist')
+    } catch (error) {
+      addToast('error', String(error))
+    }
+  }
+
+  async function removeFromWatchlist(nodeID: string) {
+    try {
+      await UnwatchVariableNode(nodeID)
+      addToast('info', 'Removed from Watchlist')
+    } catch (error) {
+      addToast('error', String(error))
+    }
+  }
+
+  async function inspectWatchlistRow(row: WatchlistRow) {
+    selectedNodeID = row.node.NodeID
+    await InspectVariableNode(row.node)
+    activeTab = 'address-space'
+  }
+
   function isHidden(index: number) {
     let depth = tree[index].depth
     for (let cursor = index - 1; cursor >= 0 && depth > 0; cursor--) {
@@ -245,6 +294,44 @@
     if (!value || value.startsWith('0001-')) return '—'
     return new Date(value).toLocaleTimeString()
   }
+
+  function statusBucket(row: WatchlistRow) {
+    const status = row.value?.Status || ''
+    if (row.stale) return 'Stale'
+    if (status.includes('Bad') || row.error) return 'Bad'
+    if (status.includes('Uncertain')) return 'Uncertain'
+    if (status.includes('Good')) return 'Good'
+    return 'Waiting'
+  }
+
+  function statusDotClass(row: WatchlistRow) {
+    const bucket = statusBucket(row)
+    if (bucket === 'Good') return 'bg-emerald-400 shadow-[0_0_8px_rgba(74,222,128,0.4)]'
+    if (bucket === 'Bad') return 'bg-error shadow-[0_0_8px_rgba(255,180,171,0.5)] animate-pulse'
+    if (bucket === 'Uncertain' || bucket === 'Stale') return 'bg-tertiary-container shadow-[0_0_8px_rgba(241,160,43,0.4)]'
+    return 'bg-outline'
+  }
+
+  function statusTextClass(row: WatchlistRow) {
+    const bucket = statusBucket(row)
+    if (bucket === 'Bad') return 'text-error'
+    if (bucket === 'Uncertain' || bucket === 'Stale' || row.outOfRange) return 'text-tertiary'
+    if (bucket === 'Good') return 'text-primary-fixed-dim'
+    return 'text-on-surface-variant'
+  }
+
+  $: watchlistCounts = watchlist.reduce(
+    (counts, row) => {
+      const bucket = statusBucket(row)
+      if (bucket === 'Good') counts.good++
+      else if (bucket === 'Bad') counts.bad++
+      else if (bucket === 'Uncertain') counts.uncertain++
+      else if (bucket === 'Stale') counts.stale++
+      if (row.outOfRange) counts.outOfRange++
+      return counts
+    },
+    { good: 0, bad: 0, uncertain: 0, stale: 0, outOfRange: 0 }
+  )
 
   function navButtonClass(active: boolean) {
     return active
@@ -274,11 +361,11 @@
       <button class={navButtonClass(activeTab === 'address-space')} on:click={() => (activeTab = 'address-space')}>
         <span class="material-symbols-outlined">account_tree</span><span class="label text-current">Address Space</span>
       </button>
-      <button class={navButtonClass(activeTab === 'live-monitor')} on:click={() => (activeTab = 'live-monitor')}>
-        <span class="material-symbols-outlined">analytics</span><span class="label text-current">Live Monitor</span>
+      <button class={navButtonClass(activeTab === 'watchlist')} on:click={() => (activeTab = 'watchlist')}>
+        <span class="material-symbols-outlined">analytics</span><span class="label text-current">Watchlist</span>
       </button>
-      <button class={navButtonClass(activeTab === 'trends')} on:click={() => (activeTab = 'trends')}>
-        <span class="material-symbols-outlined">show_chart</span><span class="label text-current">Trend Dashboard</span>
+      <button class={navButtonClass(activeTab === 'session-trend')} on:click={() => (activeTab = 'session-trend')}>
+        <span class="material-symbols-outlined">show_chart</span><span class="label text-current">Session Trend</span>
       </button>
     </nav>
 
@@ -395,7 +482,16 @@
           </div>
 
           <div class="panel flex min-h-0 flex-col overflow-hidden">
-            <div class="border-b border-outline-variant p-md"><p class="label">Variable Node Inspection</p><h2 class="text-xl font-semibold">{inspection?.node?.DisplayName ?? 'No Variable Node selected'}</h2></div>
+            <div class="flex items-center justify-between gap-md border-b border-outline-variant p-md">
+              <div class="min-w-0"><p class="label">Variable Node Inspection</p><h2 class="truncate text-xl font-semibold">{inspection?.node?.DisplayName ?? 'No Variable Node selected'}</h2></div>
+              {#if inspection}
+                {#if inspection.watched}
+                  <button class="btn-secondary shrink-0" on:click={() => removeFromWatchlist(inspection?.node.NodeID || '')}>Remove from Watchlist</button>
+                {:else}
+                  <button class="btn-primary shrink-0" on:click={addSelectedToWatchlist}>Add to Watchlist</button>
+                {/if}
+              {/if}
+            </div>
             <div class="min-h-0 flex-1 overflow-auto p-lg">
               {#if inspection}
                 <div class="grid gap-md lg:grid-cols-3">
@@ -431,9 +527,66 @@
             </div>
           </div>
         </section>
-      {:else if activeTab === 'live-monitor' || activeTab === 'trends'}
+      {:else if activeTab === 'watchlist'}
+        <section class="space-y-lg">
+          <div class="flex items-end justify-between gap-md">
+            <div>
+              <p class="label">Watchlist</p>
+              <h2 class="text-3xl font-semibold">Watched Variable Nodes</h2>
+              <p class="mt-sm text-on-surface-variant">Live Values from Variable Nodes selected during this Troubleshooting Session.</p>
+            </div>
+          </div>
+
+          {#if !connected}
+            <div class="panel flex min-h-[420px] items-center justify-center p-xl text-center text-on-surface-variant">Connect to an OPC UA Server to create a Watchlist.</div>
+          {:else if watchlist.length === 0}
+            <div class="panel flex min-h-[420px] items-center justify-center p-xl text-center text-on-surface-variant">No watched Variable Nodes. Select a Variable Node in the Address Space and choose Add to Watchlist.</div>
+          {:else}
+            <div class="panel overflow-hidden">
+              <div class="grid grid-cols-12 gap-sm border-b border-outline-variant bg-surface-container-highest px-md py-sm text-xs font-semibold uppercase tracking-wider text-on-surface-variant">
+                <div class="col-span-1 pl-xs">Status</div>
+                <div class="col-span-3">Variable Node</div>
+                <div class="col-span-3">NodeId</div>
+                <div class="col-span-2 text-right">Live Value</div>
+                <div class="col-span-1 text-center">Data Type</div>
+                <div class="col-span-2 text-right pr-xs">Source Timestamp</div>
+              </div>
+              <div class="max-h-[62vh] overflow-auto font-mono text-sm">
+                {#each watchlist as row (row.node.NodeID)}
+                  <div class="grid grid-cols-12 items-center gap-sm border-b border-outline-variant px-md py-sm transition-colors hover:bg-surface-container-high {statusBucket(row) === 'Bad' ? 'bg-error/5' : ''}">
+                    <button class="col-span-1 flex items-center gap-sm pl-xs text-left" on:click={() => inspectWatchlistRow(row)} title={statusBucket(row)}>
+                      <span class="h-2 w-2 rounded-full {statusDotClass(row)}"></span>
+                      <span class="sr-only">{statusBucket(row)}</span>
+                    </button>
+                    <button class="col-span-3 truncate text-left hover:text-primary {statusTextClass(row)}" on:click={() => inspectWatchlistRow(row)}>{row.node.DisplayName}</button>
+                    <button class="col-span-3 truncate text-left text-on-surface-variant" on:click={() => inspectWatchlistRow(row)}>{row.node.NodeID}</button>
+                    <button class="col-span-2 truncate text-right font-bold {statusTextClass(row)}" on:click={() => inspectWatchlistRow(row)}>{row.error || row.value?.Value || '—'}{row.engineeringUnit ? ` ${row.engineeringUnit}` : ''}</button>
+                    <button class="col-span-1 mx-auto w-max rounded border border-outline-variant px-xs text-center text-xs text-on-surface-variant" on:click={() => inspectWatchlistRow(row)}>{row.dataType || '—'}</button>
+                    <div class="col-span-2 flex items-center justify-end gap-sm pr-xs text-on-surface-variant">
+                      <button class="truncate text-right" on:click={() => inspectWatchlistRow(row)}>{compactTime(row.value?.SourceTimestamp)}</button>
+                      {#if row.outOfRange}<span class="rounded bg-tertiary-container/20 px-xs text-xs text-tertiary" title={row.outOfRange}>Out-of-Range</span>{/if}
+                      {#if row.stale}<span class="rounded bg-tertiary-container/20 px-xs text-xs text-tertiary">Stale</span>{/if}
+                      <button class="rounded p-xs hover:bg-surface-container-highest" on:click={() => removeFromWatchlist(row.node.NodeID)} title="Remove from Watchlist"><span class="material-symbols-outlined text-[18px]">close</span></button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+              <div class="flex items-center justify-between border-t border-outline-variant bg-surface-container px-md py-sm text-xs font-semibold text-on-surface-variant">
+                <span>Showing {watchlist.length} watched Variable Nodes</span>
+                <div class="flex items-center gap-sm">
+                  <span><span class="mr-xs inline-block h-2 w-2 rounded-full bg-emerald-400"></span>{watchlistCounts.good} Good</span>
+                  <span><span class="mr-xs inline-block h-2 w-2 rounded-full bg-error"></span>{watchlistCounts.bad} Bad</span>
+                  <span><span class="mr-xs inline-block h-2 w-2 rounded-full bg-tertiary-container"></span>{watchlistCounts.uncertain} Uncertain</span>
+                  <span>{watchlistCounts.stale} Stale</span>
+                  <span>{watchlistCounts.outOfRange} Out-of-Range</span>
+                </div>
+              </div>
+            </div>
+          {/if}
+        </section>
+      {:else if activeTab === 'session-trend'}
         <section class="panel flex min-h-[520px] items-center justify-center p-xl text-center">
-          <div><span class="material-symbols-outlined text-5xl text-primary">construction</span><h2 class="mt-md text-2xl font-semibold">Coming soon</h2><p class="mt-sm max-w-md text-on-surface-variant">{activeTab === 'live-monitor' ? 'Watchlist-based Live Monitor' : 'Session Trend dashboard'} will build on the Variable Node Inspection slice.</p></div>
+          <div><span class="material-symbols-outlined text-5xl text-primary">construction</span><h2 class="mt-md text-2xl font-semibold">Coming soon</h2><p class="mt-sm max-w-md text-on-surface-variant">Session Trend will build on the Variable Node Inspection slice.</p></div>
         </section>
       {:else if activeTab === 'logs'}
         <section class="panel overflow-hidden">

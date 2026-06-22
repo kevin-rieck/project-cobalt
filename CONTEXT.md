@@ -58,7 +58,7 @@ _Avoid_: selected value panel, node details workflow
 
 **Watchlist**:
 A user-selected set of Variable Nodes whose Live Values remain readily available during a Troubleshooting Session.
-_Avoid_: Dashboard, monitor, pinned nodes, Live Monitor
+_Avoid_: Dashboard, monitor, pinned nodes, Live Monitor, Live View
 
 **Session Trend**:
 A temporary view of how a Live Value changes during the current Troubleshooting Session.

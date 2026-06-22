@@ -26,6 +26,18 @@ export function GetDiagnosticLogs() {
   return window['go']['main']['App']['GetDiagnosticLogs']();
 }
 
+export function GetWatchlist() {
+  return window['go']['main']['App']['GetWatchlist']();
+}
+
 export function InspectVariableNode(arg1) {
   return window['go']['main']['App']['InspectVariableNode'](arg1);
+}
+
+export function UnwatchVariableNode(arg1) {
+  return window['go']['main']['App']['UnwatchVariableNode'](arg1);
+}
+
+export function WatchVariableNode(arg1) {
+  return window['go']['main']['App']['WatchVariableNode'](arg1);
 }

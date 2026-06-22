@@ -474,6 +474,13 @@ func dataTypeName(nodeID *ua.NodeID) string {
 
 func engineeringUnitText(value any) string {
 	switch v := value.(type) {
+	case *ua.ExtensionObject:
+		if v == nil {
+			return ""
+		}
+		return engineeringUnitText(v.Value)
+	case ua.ExtensionObject:
+		return engineeringUnitText(v.Value)
 	case *ua.EUInformation:
 		if v == nil {
 			return ""

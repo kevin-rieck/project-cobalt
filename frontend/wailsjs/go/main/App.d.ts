@@ -15,4 +15,10 @@ export function DiscoverEndpoints(arg1:string):Promise<Array<opcua.Endpoint>>;
 
 export function GetDiagnosticLogs():Promise<Array<main.DiagnosticLogEntry>>;
 
+export function GetWatchlist():Promise<Array<main.WatchlistRowView>>;
+
 export function InspectVariableNode(arg1:opcua.AddressNode):Promise<void>;
+
+export function UnwatchVariableNode(arg1:string):Promise<void>;
+
+export function WatchVariableNode(arg1:opcua.AddressNode):Promise<void>;

@@ -1,0 +1,65 @@
+# OPC UA Studio
+
+A desktop OPC UA client for automation engineers who need to inspect and interact with existing OPC UA Servers.
+
+## Language
+
+**OPC UA Studio**:
+A desktop OPC UA client that connects to existing OPC UA Servers so automation engineers can inspect and interact with them.
+_Avoid_: OPC UA Client TUI, Control Gateway, OPC UA Server UI
+
+**Saved Connection**:
+A locally stored set of non-secret details used to reconnect to an OPC UA Server, often labeled with a user-defined name such as “Control Gateway”.
+_Avoid_: Profile, bookmark, credential, workspace
+
+**Read-Only Mode**:
+A state of OPC UA Studio where it does not perform write operations or method calls against the OPC UA Server.
+_Avoid_: Safe mode, view-only mode, no-write mode
+
+**Automation Engineer**:
+A practitioner who configures, commissions, troubleshoots, or maintains industrial automation systems.
+_Avoid_: Developer, operator, user
+
+**OPC UA Server**:
+An industrial automation endpoint that exposes data, metadata, events, and operations through the OPC UA protocol.
+_Avoid_: Server implementation, backend
+
+**Address Space**:
+The browsable structure of an OPC UA Server, containing nodes and their relationships.
+_Avoid_: Tag tree, menu, file tree
+
+**Rate-Limited Browsing**:
+Browsing or indexing the Address Space at a bounded request rate to reduce load on an OPC UA Server.
+_Avoid_: Gentle browsing, crawl, aggressive indexing
+
+**Variable Node**:
+A node in the Address Space that represents a readable, and sometimes writable, process value or state.
+_Avoid_: Tag, point, field
+
+**Live Value**:
+The current value of a Variable Node together with its health and timestamp information.
+_Avoid_: Reading, datapoint, sample
+
+**Stale Value**:
+A previously observed Live Value that may no longer represent the current state of the OPC UA Server.
+_Avoid_: Cached value, invalid value, old reading
+
+**Out-of-Range**:
+A condition where a numeric Live Value falls outside range metadata exposed by the OPC UA Server.
+_Avoid_: Alarm, alert, warning
+
+**Troubleshooting Session**:
+A focused investigation of a live OPC UA Server to understand current values, metadata, status, and connectivity problems.
+_Avoid_: Monitoring session, dashboard, commissioning workflow
+
+**Variable Node Inspection**:
+The focused view of one Variable Node during a Troubleshooting Session, combining its Live Value, metadata, health, stale state, and out-of-range status.
+_Avoid_: selected value panel, node details workflow
+
+**Watchlist**:
+A user-selected set of Variable Nodes whose Live Values remain readily available during a Troubleshooting Session.
+_Avoid_: Dashboard, monitor, pinned nodes, Live Monitor
+
+**Session Trend**:
+A temporary view of how a Live Value changes during the current Troubleshooting Session.
+_Avoid_: Historian, chart history, Trend Dashboard

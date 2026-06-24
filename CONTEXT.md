@@ -16,6 +16,10 @@ _Avoid_: Profile, bookmark, credential, workspace
 A state of OPC UA Studio where it does not perform write operations or method calls against the OPC UA Server.
 _Avoid_: Safe mode, view-only mode, no-write mode
 
+**Client Certificate**:
+A certificate presented by OPC UA Studio when connecting to an OPC UA Server endpoint that requires signed or encrypted communication.
+_Avoid_: User certificate, server certificate, credential file
+
 **Automation Engineer**:
 A practitioner who configures, commissions, troubleshoots, or maintains industrial automation systems.
 _Avoid_: Developer, operator, user
@@ -37,8 +41,8 @@ A node in the Address Space that represents a readable, and sometimes writable, 
 _Avoid_: Tag, point, field
 
 **Observed Variable Node**:
-A Variable Node whose Live Value has been inspected or watched during the current Troubleshooting Session.
-_Avoid_: Trended node, sampled node, monitored node
+A Variable Node whose Live Value is watched during the current Troubleshooting Session and remains available in Session Trend.
+_Avoid_: Inspected node, trended node, sampled node, monitored node
 
 **Live Value**:
 The current value of a Variable Node together with its health and timestamp information.

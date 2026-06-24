@@ -38,6 +38,14 @@ export function InspectVariableNode(arg1) {
   return window['go']['main']['App']['InspectVariableNode'](arg1);
 }
 
+export function PickClientCertificate() {
+  return window['go']['main']['App']['PickClientCertificate']();
+}
+
+export function PickClientPrivateKey() {
+  return window['go']['main']['App']['PickClientPrivateKey']();
+}
+
 export function UnwatchVariableNode(arg1) {
   return window['go']['main']['App']['UnwatchVariableNode'](arg1);
 }

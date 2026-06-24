@@ -168,7 +168,9 @@ func (s *InspectionSet) ApplyLiveValue(nodeID string, value opcua.LiveValue, err
 	inspection.Stale = false
 	inspection.OutOfRange = outOfRangeText(value.Value, inspection.Details.EURange)
 	inspection.UpdateCount++
-	s.appendTrendPoint(inspection.Node, value)
+	if inspection.Watched {
+		s.appendTrendPoint(inspection.Node, value)
+	}
 	if inspection.Updates == nil {
 		return nil
 	}

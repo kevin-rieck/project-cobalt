@@ -52,9 +52,21 @@ func TestSelectedAndWatchedShareStaleValueState(t *testing.T) {
 	}
 }
 
-func TestSessionTrendRecordsObservedLiveValueUpdates(t *testing.T) {
+func TestSessionTrendIgnoresInspectedOnlyLiveValueUpdates(t *testing.T) {
 	set := NewInspectionSet()
 	set.Select(variable("ns=2;s=Level"))
+
+	set.ApplyLiveValue("ns=2;s=Level", opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "10", Status: "Good"}, nil)
+
+	trend := set.SessionTrend("ns=2;s=Level")
+	if len(trend.Nodes) != 0 || len(trend.Points) != 0 {
+		t.Fatalf("inspected-only node should not appear in Session Trend: %#v", trend)
+	}
+}
+
+func TestSessionTrendRecordsWatchedLiveValueUpdates(t *testing.T) {
+	set := NewInspectionSet()
+	set.Watch(variable("ns=2;s=Level"))
 	first := opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "10", Status: "Good"}
 	second := opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "11", Status: "Good"}
 
@@ -78,7 +90,7 @@ func TestSessionTrendRecordsObservedLiveValueUpdates(t *testing.T) {
 
 func TestSessionTrendUsesSourceTimestampAsDisplayTime(t *testing.T) {
 	set := NewInspectionSet()
-	set.Select(variable("ns=2;s=Level"))
+	set.Watch(variable("ns=2;s=Level"))
 	sourceTime := time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)
 	serverTime := time.Date(2026, 6, 24, 10, 31, 0, 0, time.UTC)
 
@@ -104,7 +116,7 @@ func TestSessionTrendKeepsObservedNodeAfterSubscriptionStops(t *testing.T) {
 
 func TestSessionTrendRetainsLatestFiveHundredUpdates(t *testing.T) {
 	set := NewInspectionSet()
-	set.Select(variable("ns=2;s=Level"))
+	set.Watch(variable("ns=2;s=Level"))
 
 	for update := 1; update <= 501; update++ {
 		set.ApplyLiveValue("ns=2;s=Level", opcua.LiveValue{NodeID: "ns=2;s=Level", Value: fmt.Sprint(update), Status: "Good"}, nil)

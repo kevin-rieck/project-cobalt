@@ -22,6 +22,10 @@ export function GetWatchlist():Promise<Array<main.WatchlistRowView>>;
 
 export function InspectVariableNode(arg1:opcua.AddressNode):Promise<void>;
 
+export function PickClientCertificate():Promise<string>;
+
+export function PickClientPrivateKey():Promise<string>;
+
 export function UnwatchVariableNode(arg1:string):Promise<void>;
 
 export function WatchVariableNode(arg1:opcua.AddressNode):Promise<void>;

@@ -7,6 +7,9 @@ export namespace main {
 	    authType: string;
 	    username: string;
 	    password: string;
+	    clientCertificatePath: string;
+	    clientPrivateKeyPath: string;
+	    serverThumbprint: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConnectionRequest(source);
@@ -20,6 +23,9 @@ export namespace main {
 	        this.authType = source["authType"];
 	        this.username = source["username"];
 	        this.password = source["password"];
+	        this.clientCertificatePath = source["clientCertificatePath"];
+	        this.clientPrivateKeyPath = source["clientPrivateKeyPath"];
+	        this.serverThumbprint = source["serverThumbprint"];
 	    }
 	}
 	export class DiagnosticLogEntry {

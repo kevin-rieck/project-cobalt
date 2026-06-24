@@ -49,12 +49,15 @@ type DiagnosticLogEntry struct {
 }
 
 type ConnectionRequest struct {
-	Endpoint       string         `json:"endpoint"`
-	SecurityPolicy string         `json:"securityPolicy"`
-	SecurityMode   string         `json:"securityMode"`
-	AuthType       opcua.AuthType `json:"authType"`
-	Username       string         `json:"username"`
-	Password       string         `json:"password"`
+	Endpoint              string         `json:"endpoint"`
+	SecurityPolicy        string         `json:"securityPolicy"`
+	SecurityMode          string         `json:"securityMode"`
+	AuthType              opcua.AuthType `json:"authType"`
+	Username              string         `json:"username"`
+	Password              string         `json:"password"`
+	ClientCertificatePath string         `json:"clientCertificatePath"`
+	ClientPrivateKeyPath  string         `json:"clientPrivateKeyPath"`
+	ServerThumbprint      string         `json:"serverThumbprint"`
 }
 
 type VariableNodeInspectionView struct {
@@ -96,14 +99,19 @@ func (a *App) DiscoverEndpoints(endpoint string) ([]opcua.Endpoint, error) {
 
 func (a *App) Connect(request ConnectionRequest) error {
 	connectRequest := opcua.ConnectRequest{
-		Endpoint:       request.Endpoint,
-		SecurityPolicy: request.SecurityPolicy,
-		SecurityMode:   request.SecurityMode,
-		AuthType:       request.AuthType,
-		Username:       request.Username,
-		Password:       request.Password,
+		Endpoint:              request.Endpoint,
+		SecurityPolicy:        request.SecurityPolicy,
+		SecurityMode:          request.SecurityMode,
+		AuthType:              request.AuthType,
+		Username:              request.Username,
+		Password:              request.Password,
+		ClientCertificatePath: request.ClientCertificatePath,
+		ClientPrivateKeyPath:  request.ClientPrivateKeyPath,
 	}
 	a.appendLog("info", fmt.Sprintf("Connecting to %s (%s / %s / %s)", request.Endpoint, request.SecurityPolicy, request.SecurityMode, request.AuthType))
+	if request.ServerThumbprint != "" {
+		a.appendLog("info", fmt.Sprintf("Selected server certificate thumbprint: %s", request.ServerThumbprint))
+	}
 	if err := a.client.Connect(a.ctx, connectRequest); err != nil {
 		a.appendLog("error", fmt.Sprintf("Connection failed: %v", err))
 		return err
@@ -117,6 +125,26 @@ func (a *App) Connect(request ConnectionRequest) error {
 	a.emitSessionTrendUpdated()
 	a.appendLog("info", "Connected")
 	return nil
+}
+
+func (a *App) PickClientCertificate() (string, error) {
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select OPC UA Client Certificate",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Certificate files (*.pem;*.crt;*.cer)", Pattern: "*.pem;*.crt;*.cer"},
+			{DisplayName: "All files (*.*)", Pattern: "*.*"},
+		},
+	})
+}
+
+func (a *App) PickClientPrivateKey() (string, error) {
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select OPC UA Client Private Key",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Private key files (*.key;*.pem)", Pattern: "*.key;*.pem"},
+			{DisplayName: "All files (*.*)", Pattern: "*.*"},
+		},
+	})
 }
 
 func (a *App) Disconnect() error {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSessionTrend, GetWatchlist, InspectVariableNode, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
+  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
 
   type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
@@ -109,6 +109,8 @@
   let authType: AuthType = 'Anonymous'
   let username = ''
   let password = ''
+  let clientCertificatePath = ''
+  let clientPrivateKeyPath = ''
   let discovering = false
   let connecting = false
   let connected = false
@@ -124,8 +126,11 @@
   let toasts: { id: number; level: string; message: string }[] = []
 
   $: selectedEndpointInfo = endpoints[selectedEndpoint]
+  $: selectedSecurityMode = selectedEndpointInfo?.SecurityMode?.replace('MessageSecurityMode', '').trim() || ''
+  $: selectedEndpointIsSecure = selectedSecurityMode !== '' && selectedSecurityMode !== 'None'
   $: canUseUsername = selectedEndpointInfo?.UserTokenTypes?.some(token => token.includes('UserName')) ?? false
   $: if (!canUseUsername && authType === 'UserName') authType = 'Anonymous'
+  $: canConnect = !!selectedEndpointInfo && !connecting && (!selectedEndpointIsSecure || (!!clientCertificatePath && !!clientPrivateKeyPath))
   $: visibleTree = tree.filter((_, index) => !isHidden(index))
 
   onMount(async () => {
@@ -193,7 +198,10 @@
         securityMode: selectedEndpointInfo.SecurityMode,
         authType,
         username,
-        password
+        password,
+        clientCertificatePath,
+        clientPrivateKeyPath,
+        serverThumbprint: selectedEndpointInfo.ServerThumbprint
       })
       connected = true
       currentConnection = endpointText
@@ -210,6 +218,24 @@
       addToast('error', connectionError)
     } finally {
       connecting = false
+    }
+  }
+
+  async function pickClientCertificate() {
+    try {
+      const path = await PickClientCertificate()
+      if (path) clientCertificatePath = path
+    } catch (error) {
+      addToast('error', String(error))
+    }
+  }
+
+  async function pickClientPrivateKey() {
+    try {
+      const path = await PickClientPrivateKey()
+      if (path) clientPrivateKeyPath = path
+    } catch (error) {
+      addToast('error', String(error))
     }
   }
 
@@ -491,6 +517,7 @@
                       </div>
                       <p class="mt-xs truncate text-sm text-on-surface-variant">{endpoint.URL}</p>
                       <p class="mt-xs text-xs text-on-surface-variant">Auth: {endpoint.UserTokenTypes.join(', ') || 'Unknown'}</p>
+                      {#if endpoint.ServerThumbprint}<p class="mt-xs truncate font-mono text-xs text-on-surface-variant">Server cert: {endpoint.ServerThumbprint}</p>{/if}
                     </button>
                   {/each}
                 </div>
@@ -508,8 +535,32 @@
                   <label class="block space-y-xs"><span class="label">Username</span><input class="field w-full" bind:value={username} /></label>
                   <label class="block space-y-xs"><span class="label">Password</span><input class="field w-full" type="password" bind:value={password} /></label>
                 {/if}
-                <button class="btn-primary w-full" on:click={connect} disabled={connecting}>{connecting ? 'Connecting…' : 'Connect'}</button>
-                <p class="text-sm text-on-surface-variant">Secure endpoints requiring client certificates are intentionally deferred in this slice.</p>
+                {#if selectedEndpointIsSecure}
+                  <div class="space-y-sm rounded border border-outline-variant bg-surface-container-low p-md">
+                    <p class="label">Client Certificate</p>
+                    <p class="text-sm text-on-surface-variant">Secure endpoints require a PEM/CRT client certificate and PEM/KEY private key.</p>
+                    <label class="block space-y-xs">
+                      <span class="label">Certificate Path</span>
+                      <div class="flex gap-sm">
+                        <input class="field min-w-0 flex-1" bind:value={clientCertificatePath} placeholder="C:\\certs\\client.crt" />
+                        <button class="btn-secondary shrink-0" on:click={pickClientCertificate}>Browse…</button>
+                      </div>
+                    </label>
+                    <label class="block space-y-xs">
+                      <span class="label">Private Key Path</span>
+                      <div class="flex gap-sm">
+                        <input class="field min-w-0 flex-1" bind:value={clientPrivateKeyPath} placeholder="C:\\certs\\client.key" />
+                        <button class="btn-secondary shrink-0" on:click={pickClientPrivateKey}>Browse…</button>
+                      </div>
+                    </label>
+                  </div>
+                {/if}
+                <button class="btn-primary w-full" on:click={connect} disabled={!canConnect}>{connecting ? 'Connecting…' : 'Connect'}</button>
+                {#if selectedEndpointIsSecure && (!clientCertificatePath || !clientPrivateKeyPath)}
+                  <p class="text-sm text-tertiary">Provide a client certificate and private key to connect to this secure endpoint.</p>
+                {:else}
+                  <p class="text-sm text-on-surface-variant">User certificate authentication and issued tokens are intentionally deferred in this slice.</p>
+                {/if}
               </div>
             </div>
           {/if}

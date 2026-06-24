@@ -3,6 +3,7 @@
 import {opcua} from '../models';
 import {main} from '../models';
 import {session} from '../models';
+import {search} from '../models';
 
 export function BrowseChildren(arg1:string):Promise<Array<opcua.AddressNode>>;
 
@@ -25,6 +26,8 @@ export function InspectVariableNode(arg1:opcua.AddressNode):Promise<void>;
 export function PickClientCertificate():Promise<string>;
 
 export function PickClientPrivateKey():Promise<string>;
+
+export function SearchAddressSpace(arg1:string):Promise<search.AddressSpaceSearchView>;
 
 export function UnwatchVariableNode(arg1:string):Promise<void>;
 

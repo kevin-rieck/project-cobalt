@@ -46,6 +46,10 @@ export function PickClientPrivateKey() {
   return window['go']['main']['App']['PickClientPrivateKey']();
 }
 
+export function SearchAddressSpace(arg1) {
+  return window['go']['main']['App']['SearchAddressSpace'](arg1);
+}
+
 export function UnwatchVariableNode(arg1) {
   return window['go']['main']['App']['UnwatchVariableNode'](arg1);
 }

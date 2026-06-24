@@ -9,6 +9,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"opcua-studio/internal/opcua"
+	"opcua-studio/internal/search"
 	"opcua-studio/internal/session"
 )
 
@@ -23,9 +24,10 @@ const (
 type App struct {
 	ctx context.Context
 
-	mu          sync.Mutex
-	client      opcua.Client
-	inspections *session.InspectionSet
+	mu                 sync.Mutex
+	client             opcua.Client
+	inspections        *session.InspectionSet
+	addressSpaceSearch *search.Service
 	logs               []DiagnosticLogEntry
 	connected          bool
 	trendNotifyPending bool
@@ -33,7 +35,7 @@ type App struct {
 
 // NewApp creates a new App application struct.
 func NewApp() *App {
-	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet()}
+	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService()}
 }
 
 // startup is called when the app starts. The context is saved so we can emit runtime events.
@@ -86,6 +88,10 @@ type WatchlistRowView struct {
 	DetailsError    string            `json:"detailsError"`
 }
 
+func objectsRootNode() opcua.AddressNode {
+	return opcua.AddressNode{NodeID: "i=85", DisplayName: "Objects", BrowseName: "Objects", NodeClass: "Object"}
+}
+
 func (a *App) DiscoverEndpoints(endpoint string) ([]opcua.Endpoint, error) {
 	a.appendLog("info", fmt.Sprintf("Discovering endpoints for %s", endpoint))
 	endpoints, err := a.client.DiscoverEndpoints(a.ctx, endpoint)
@@ -119,6 +125,8 @@ func (a *App) Connect(request ConnectionRequest) error {
 	a.mu.Lock()
 	a.connected = true
 	a.inspections = session.NewInspectionSet()
+	a.addressSpaceSearch.Reset()
+	a.addressSpaceSearch.AddNodes([]opcua.AddressNode{objectsRootNode()})
 	a.mu.Unlock()
 	a.emitInspection(nil)
 	a.emitWatchlist()
@@ -156,6 +164,7 @@ func (a *App) Disconnect() error {
 	a.mu.Lock()
 	a.client = opcua.NewClient()
 	a.inspections = session.NewInspectionSet()
+	a.addressSpaceSearch.Reset()
 	a.connected = false
 	a.mu.Unlock()
 	a.emitInspection(nil)
@@ -175,8 +184,19 @@ func (a *App) BrowseChildren(nodeID string) ([]opcua.AddressNode, error) {
 		a.appendLog("error", fmt.Sprintf("Browse failed for %s: %v", nodeID, err))
 		return nil, err
 	}
+	a.addressSpaceSearch.AddNodes(children)
 	a.appendLog("info", fmt.Sprintf("Browsed %d children of %s", len(children), nodeID))
 	return children, nil
+}
+
+func (a *App) SearchAddressSpace(query string) (search.AddressSpaceSearchView, error) {
+	a.mu.Lock()
+	connected := a.connected
+	a.mu.Unlock()
+	if !connected {
+		return search.AddressSpaceSearchView{Query: query, Results: []search.AddressSpaceSearchResult{}, Status: "Connect to an OPC UA Server to search browsed Address Space metadata."}, nil
+	}
+	return a.addressSpaceSearch.Search(query), nil
 }
 
 func (a *App) InspectVariableNode(node opcua.AddressNode) error {

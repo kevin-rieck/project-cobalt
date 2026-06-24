@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
+  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, SearchAddressSpace, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
 
   type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
@@ -20,6 +20,20 @@
     DisplayName: string
     BrowseName: string
     NodeClass: string
+  }
+
+  type AddressSpaceSearchResult = {
+    node: AddressNode
+    matchKind: string
+    matchText: string
+    source: string
+    score: number
+  }
+
+  type AddressSpaceSearchView = {
+    query: string
+    results: AddressSpaceSearchResult[]
+    status: string
   }
 
   type TreeNode = {
@@ -124,6 +138,10 @@
   let focusedTrendNodeID = ''
   let logs: DiagnosticLogEntry[] = []
   let toasts: { id: number; level: string; message: string }[] = []
+  let searchQuery = ''
+  let searchView: AddressSpaceSearchView = { query: '', results: [], status: 'Connect to an OPC UA Server to search browsed Address Space metadata.' }
+  let searching = false
+  let searchDebounce: ReturnType<typeof setTimeout> | null = null
 
   $: selectedEndpointInfo = endpoints[selectedEndpoint]
   $: selectedSecurityMode = selectedEndpointInfo?.SecurityMode?.replace('MessageSecurityMode', '').trim() || ''
@@ -211,6 +229,7 @@
       watchlist = []
       sessionTrend = { nodes: [], points: [] }
       focusedTrendNodeID = ''
+      resetSearchView()
       activeTab = 'address-space'
       addToast('info', 'Connected')
     } catch (error) {
@@ -250,6 +269,7 @@
       watchlist = []
       sessionTrend = { nodes: [], points: [] }
       focusedTrendNodeID = ''
+      resetSearchView()
       activeTab = 'connections'
       addToast('info', 'Disconnected')
     } catch (error) {
@@ -294,6 +314,52 @@
       await InspectVariableNode(item.node)
     } else {
       await ClearVariableNodeInspection()
+    }
+  }
+
+  function resetSearchView() {
+    searchQuery = ''
+    searchView = { query: '', results: [], status: connected ? 'Enter a search term to search browsed Address Space metadata.' : 'Connect to an OPC UA Server to search browsed Address Space metadata.' }
+    searching = false
+    if (searchDebounce) clearTimeout(searchDebounce)
+    searchDebounce = null
+  }
+
+  function queueAddressSpaceSearch() {
+    if (searchDebounce) clearTimeout(searchDebounce)
+    searchDebounce = setTimeout(() => {
+      void runAddressSpaceSearch()
+    }, 275)
+  }
+
+  async function runAddressSpaceSearch() {
+    searching = true
+    try {
+      searchView = await SearchAddressSpace(searchQuery)
+    } catch (error) {
+      addToast('error', String(error))
+      searchView = { query: searchQuery, results: [], status: String(error) }
+    } finally {
+      searching = false
+    }
+  }
+
+  async function activateSearchResult(result: AddressSpaceSearchResult) {
+    selectedNodeID = result.node.NodeID
+    if (result.node.NodeClass === 'Variable') {
+      await InspectVariableNode(result.node)
+    } else {
+      await ClearVariableNodeInspection()
+    }
+  }
+
+  async function addResultToWatchlist(result: AddressSpaceSearchResult, event: MouseEvent) {
+    event.stopPropagation()
+    try {
+      await WatchVariableNode(result.node)
+      addToast('info', 'Added to Watchlist')
+    } catch (error) {
+      addToast('error', String(error))
     }
   }
 
@@ -378,6 +444,16 @@
   function compactDateTime(value: string) {
     if (!value || value.startsWith('0001-')) return '—'
     return new Date(value).toLocaleString()
+  }
+
+  function nodeIcon(nodeClass: string) {
+    if (nodeClass === 'Variable') return 'monitoring'
+    if (nodeClass === 'Object') return 'account_tree'
+    return 'schema'
+  }
+
+  function isWatched(nodeID: string) {
+    return watchlist.some(row => row.node.NodeID === nodeID)
   }
 
   function statusBucket(row: WatchlistRow) {
@@ -468,7 +544,7 @@
         <span class="text-xl font-bold tracking-tight text-primary">OPC UA Studio</span>
         <div class="hidden w-72 items-center rounded border border-outline-variant bg-surface-container px-sm py-xs md:flex">
           <span class="material-symbols-outlined mr-sm text-[18px] text-on-surface-variant">search</span>
-          <input class="w-full bg-transparent text-sm outline-none placeholder:text-on-surface-variant" placeholder="Search Address Space..." />
+          <input class="w-full bg-transparent text-sm outline-none placeholder:text-on-surface-variant" placeholder="Search Address Space..." bind:value={searchQuery} on:input={queueAddressSpaceSearch} on:focus={() => (activeTab = 'address-space')} />
         </div>
       </div>
       <div class="flex items-center gap-sm">
@@ -566,7 +642,7 @@
           {/if}
         </section>
       {:else if activeTab === 'address-space'}
-        <section class="grid h-full min-h-[600px] gap-lg xl:grid-cols-[minmax(360px,0.9fr)_1.1fr]">
+        <section class="grid h-full min-h-[600px] gap-lg xl:grid-cols-[minmax(320px,0.85fr)_minmax(380px,1.05fr)_minmax(420px,1.1fr)]">
           <div class="panel flex min-h-0 flex-col overflow-hidden">
             <div class="flex items-center justify-between border-b border-outline-variant p-md">
               <div><p class="label">Address Space</p><h2 class="text-xl font-semibold">Objects</h2></div>
@@ -587,6 +663,62 @@
                   </div>
                   {#if item.error}<div class="ml-lg text-xs text-error">{item.error}</div>{/if}
                 {/each}
+              {/if}
+            </div>
+          </div>
+
+          <div class="panel flex min-h-0 flex-col overflow-hidden">
+            <div class="border-b border-outline-variant p-md">
+              <p class="label">Search</p>
+              <h2 class="text-xl font-semibold">Address Space Search</h2>
+              <p class="mt-xs text-sm text-on-surface-variant">Search browsed metadata: DisplayName, BrowseName, NodeID, and NodeClass.</p>
+              <div class="relative mt-md">
+                <span class="material-symbols-outlined absolute left-md top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
+                <input class="field w-full py-md pl-[48px] text-base" placeholder="Search Address Space…" bind:value={searchQuery} on:input={queueAddressSpaceSearch} />
+              </div>
+            </div>
+            <div class="min-h-0 flex-1 overflow-auto p-md">
+              {#if searching}
+                <div class="mb-md text-sm text-primary">Searching…</div>
+              {/if}
+              {#if searchView.results.length === 0}
+                <div class="flex min-h-[260px] items-center justify-center rounded border border-dashed border-outline-variant bg-surface-container-low p-lg text-center text-on-surface-variant">
+                  <div>
+                    <span class="material-symbols-outlined text-3xl text-primary">manage_search</span>
+                    <p class="mt-sm">{searchView.status}</p>
+                    {#if connected}<p class="mt-xs text-xs">Browse the tree to add more Address Space metadata to Search.</p>{/if}
+                  </div>
+                </div>
+              {:else}
+                <div class="space-y-md">
+                  {#each searchView.results as result (result.node.NodeID)}
+                    <div role="button" tabindex="0" class="group relative block w-full cursor-pointer overflow-hidden rounded-lg border border-outline-variant bg-surface-container p-md text-left transition-colors hover:border-primary/70 {selectedNodeID === result.node.NodeID ? 'border-primary bg-secondary-container/40' : ''}" on:click={() => activateSearchResult(result)} on:keydown={(event) => event.key === 'Enter' && activateSearchResult(result)}>
+                      <div class="absolute left-0 top-0 bottom-0 w-[2px] bg-primary {selectedNodeID === result.node.NodeID ? 'scale-y-100' : 'scale-y-0 group-hover:scale-y-100'} origin-top transition-transform"></div>
+                      <div class="flex items-start justify-between gap-md">
+                        <div class="flex min-w-0 gap-sm">
+                          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-outline-variant bg-surface-container-high text-primary">
+                            <span class="material-symbols-outlined">{nodeIcon(result.node.NodeClass)}</span>
+                          </div>
+                          <div class="min-w-0">
+                            <h3 class="truncate text-lg font-semibold text-on-surface">{result.node.DisplayName}</h3>
+                            <p class="mt-xs truncate font-mono text-xs text-on-surface-variant">{result.node.NodeID}</p>
+                          </div>
+                        </div>
+                        <span class="rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-primary">{result.node.NodeClass}</span>
+                      </div>
+                      <div class="mt-md grid gap-sm text-xs lg:grid-cols-2">
+                        <div class="rounded border border-outline-variant/60 bg-surface p-sm"><span class="label block">BrowseName</span><span class="font-mono text-on-surface">{result.node.BrowseName || '—'}</span></div>
+                        <div class="rounded border border-outline-variant/60 bg-surface p-sm"><span class="label block">Match</span><span class="font-mono text-on-surface">{result.matchKind}: {result.matchText}</span></div>
+                      </div>
+                      <div class="mt-md flex items-center justify-between gap-sm">
+                        <span class="rounded bg-surface-container-high px-sm py-xs font-mono text-[10px] text-on-surface-variant">{result.source}</span>
+                        {#if result.node.NodeClass === 'Variable'}
+                          <button class="btn-primary shrink-0 px-sm py-xs text-xs" disabled={isWatched(result.node.NodeID)} on:click={(event) => addResultToWatchlist(result, event)}>{isWatched(result.node.NodeID) ? 'In Watchlist' : 'Add to Watchlist'}</button>
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
+                </div>
               {/if}
             </div>
           </div>

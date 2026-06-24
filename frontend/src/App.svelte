@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetWatchlist, InspectVariableNode, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
+  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSessionTrend, GetWatchlist, InspectVariableNode, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
 
   type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
@@ -69,6 +69,27 @@
     detailsError: string
   }
 
+  type SessionTrendPoint = {
+    value: string
+    status: string
+    timestamp: string
+    sourceTimestamp: string
+    serverTimestamp: string
+    receivedAt: string
+  }
+
+  type SessionTrendNode = {
+    node: AddressNode
+    latestValue: string
+    status: string
+    pointCount: number
+  }
+
+  type SessionTrendView = {
+    nodes: SessionTrendNode[]
+    points: SessionTrendPoint[]
+  }
+
   type DiagnosticLogEntry = { timestamp: string; level: string; message: string }
 
   const objectsRoot: TreeNode = {
@@ -97,6 +118,8 @@
   let selectedNodeID = ''
   let inspection: Inspection | null = null
   let watchlist: WatchlistRow[] = []
+  let sessionTrend: SessionTrendView = { nodes: [], points: [] }
+  let focusedTrendNodeID = ''
   let logs: DiagnosticLogEntry[] = []
   let toasts: { id: number; level: string; message: string }[] = []
 
@@ -108,6 +131,7 @@
   onMount(async () => {
     logs = await GetDiagnosticLogs()
     watchlist = await GetWatchlist()
+    sessionTrend = await GetSessionTrend(focusedTrendNodeID)
     const offInspection = EventsOn('variable-inspection-updated', (payload: Inspection | null) => {
       inspection = payload
     })
@@ -117,12 +141,16 @@
         addToast('info', 'Watchlist has more than 100 Variable Nodes. Consider removing nodes you no longer need.')
       }
     })
+    const offTrend = EventsOn('session-trend-updated', async () => {
+      await refreshSessionTrend()
+    })
     const offLog = EventsOn('diagnostic-log-appended', (entry: DiagnosticLogEntry) => {
       logs = [...logs, entry].slice(-500)
     })
     return () => {
       offInspection()
       offWatchlist()
+      offTrend()
       offLog()
     }
   })
@@ -173,6 +201,8 @@
       selectedNodeID = ''
       inspection = null
       watchlist = []
+      sessionTrend = { nodes: [], points: [] }
+      focusedTrendNodeID = ''
       activeTab = 'address-space'
       addToast('info', 'Connected')
     } catch (error) {
@@ -192,6 +222,8 @@
       selectedNodeID = ''
       inspection = null
       watchlist = []
+      sessionTrend = { nodes: [], points: [] }
+      focusedTrendNodeID = ''
       activeTab = 'connections'
       addToast('info', 'Disconnected')
     } catch (error) {
@@ -271,6 +303,28 @@
     activeTab = 'address-space'
   }
 
+  async function openSessionTrend() {
+    if (!focusedTrendNodeID && inspection?.node?.NodeID) {
+      focusedTrendNodeID = inspection.node.NodeID
+    }
+    activeTab = 'session-trend'
+    await refreshSessionTrend()
+  }
+
+  async function focusTrendNode(nodeID: string) {
+    focusedTrendNodeID = nodeID
+    await refreshSessionTrend()
+  }
+
+  async function refreshSessionTrend() {
+    sessionTrend = await GetSessionTrend(focusedTrendNodeID)
+    const focusedNodeIsObserved = sessionTrend.nodes.some(node => node.node.NodeID === focusedTrendNodeID)
+    if ((!focusedTrendNodeID || !focusedNodeIsObserved) && sessionTrend.nodes.length > 0) {
+      focusedTrendNodeID = sessionTrend.nodes[0].node.NodeID
+      sessionTrend = await GetSessionTrend(focusedTrendNodeID)
+    }
+  }
+
   function isHidden(index: number) {
     let depth = tree[index].depth
     for (let cursor = index - 1; cursor >= 0 && depth > 0; cursor--) {
@@ -293,6 +347,11 @@
   function compactTime(value: string) {
     if (!value || value.startsWith('0001-')) return '—'
     return new Date(value).toLocaleTimeString()
+  }
+
+  function compactDateTime(value: string) {
+    if (!value || value.startsWith('0001-')) return '—'
+    return new Date(value).toLocaleString()
   }
 
   function statusBucket(row: WatchlistRow) {
@@ -364,7 +423,7 @@
       <button class={navButtonClass(activeTab === 'watchlist')} on:click={() => (activeTab = 'watchlist')}>
         <span class="material-symbols-outlined">analytics</span><span class="label text-current">Watchlist</span>
       </button>
-      <button class={navButtonClass(activeTab === 'session-trend')} on:click={() => (activeTab = 'session-trend')}>
+      <button class={navButtonClass(activeTab === 'session-trend')} on:click={openSessionTrend}>
         <span class="material-symbols-outlined">show_chart</span><span class="label text-current">Session Trend</span>
       </button>
     </nav>
@@ -585,8 +644,74 @@
           {/if}
         </section>
       {:else if activeTab === 'session-trend'}
-        <section class="panel flex min-h-[520px] items-center justify-center p-xl text-center">
-          <div><span class="material-symbols-outlined text-5xl text-primary">construction</span><h2 class="mt-md text-2xl font-semibold">Coming soon</h2><p class="mt-sm max-w-md text-on-surface-variant">Session Trend will build on the Variable Node Inspection slice.</p></div>
+        <section class="grid h-full min-h-[600px] gap-lg xl:grid-cols-[360px_1fr]">
+          <div class="panel flex min-h-0 flex-col overflow-hidden">
+            <div class="border-b border-outline-variant p-md">
+              <p class="label">Session Trend</p>
+              <h2 class="text-xl font-semibold">Observed Variable Nodes</h2>
+              <p class="mt-xs text-sm text-on-surface-variant">Temporary Live Value history for this Troubleshooting Session.</p>
+            </div>
+            <div class="min-h-0 flex-1 overflow-auto p-sm">
+              {#if !connected}
+                <div class="p-lg text-on-surface-variant">Connect to an OPC UA Server to collect Session Trend history.</div>
+              {:else if sessionTrend.nodes.length === 0}
+                <div class="p-lg text-on-surface-variant">Inspect or watch a Variable Node and wait for Live Value updates.</div>
+              {:else}
+                {#each sessionTrend.nodes as trendNode (trendNode.node.NodeID)}
+                  <button class="mb-xs block w-full rounded p-sm text-left transition-colors hover:bg-surface-container-high {focusedTrendNodeID === trendNode.node.NodeID ? 'bg-secondary-container text-on-secondary-container' : ''}" on:click={() => focusTrendNode(trendNode.node.NodeID)}>
+                    <div class="flex items-center justify-between gap-sm">
+                      <span class="truncate font-medium">{trendNode.node.DisplayName}</span>
+                      <span class="rounded bg-surface-container-highest px-xs font-mono text-xs text-primary">{trendNode.pointCount}</span>
+                    </div>
+                    <p class="mt-xs truncate font-mono text-xs text-on-surface-variant">{trendNode.node.NodeID}</p>
+                    <div class="mt-xs flex items-center justify-between gap-sm font-mono text-xs">
+                      <span class="truncate text-primary-fixed-dim">{trendNode.latestValue || '—'}</span>
+                      <span class="truncate text-on-surface-variant">{trendNode.status || 'Waiting'}</span>
+                    </div>
+                  </button>
+                {/each}
+              {/if}
+            </div>
+          </div>
+
+          <div class="panel flex min-h-0 flex-col overflow-hidden">
+            <div class="flex items-center justify-between gap-md border-b border-outline-variant p-md">
+              <div class="min-w-0">
+                <p class="label">Focused Variable Node</p>
+                <h2 class="truncate text-xl font-semibold">{sessionTrend.nodes.find(node => node.node.NodeID === focusedTrendNodeID)?.node.DisplayName ?? 'No Observed Variable Node selected'}</h2>
+                {#if focusedTrendNodeID}<p class="mt-xs truncate font-mono text-xs text-on-surface-variant">{focusedTrendNodeID}</p>{/if}
+              </div>
+              <span class="shrink-0 rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-on-surface-variant">Latest {sessionTrend.points.length} updates</span>
+            </div>
+            <div class="min-h-0 flex-1 overflow-auto">
+              {#if !connected}
+                <div class="flex h-full items-center justify-center p-xl text-center text-on-surface-variant">Session Trend history is available during a connected Troubleshooting Session.</div>
+              {:else if !focusedTrendNodeID || sessionTrend.points.length === 0}
+                <div class="flex h-full items-center justify-center p-xl text-center text-on-surface-variant">Waiting for Live Value updates for the focused Observed Variable Node.</div>
+              {:else}
+                <div class="grid grid-cols-12 gap-sm border-b border-outline-variant bg-surface-container-highest px-md py-sm text-xs font-semibold uppercase tracking-wider text-on-surface-variant">
+                  <div class="col-span-2">Time</div>
+                  <div class="col-span-2 text-right">Value</div>
+                  <div class="col-span-2">Status</div>
+                  <div class="col-span-2">Source Timestamp</div>
+                  <div class="col-span-2">Server Timestamp</div>
+                  <div class="col-span-2">Receive Time</div>
+                </div>
+                <div class="font-mono text-xs">
+                  {#each sessionTrend.points as point, index (`${point.receivedAt}-${index}`)}
+                    <div class="grid grid-cols-12 items-center gap-sm border-b border-outline-variant px-md py-sm hover:bg-surface-container-high">
+                      <div class="col-span-2 truncate" title={point.timestamp}>{compactDateTime(point.timestamp)}</div>
+                      <div class="col-span-2 truncate text-right font-bold text-primary" title={point.value}>{point.value || '—'}</div>
+                      <div class="col-span-2 truncate {point.status?.includes('Bad') ? 'text-error' : point.status?.includes('Uncertain') ? 'text-tertiary' : 'text-on-surface'}" title={point.status}>{point.status || '—'}</div>
+                      <div class="col-span-2 truncate text-on-surface-variant" title={point.sourceTimestamp}>{compactDateTime(point.sourceTimestamp)}</div>
+                      <div class="col-span-2 truncate text-on-surface-variant" title={point.serverTimestamp}>{compactDateTime(point.serverTimestamp)}</div>
+                      <div class="col-span-2 truncate text-on-surface-variant" title={point.receivedAt}>{compactDateTime(point.receivedAt)}</div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          </div>
         </section>
       {:else if activeTab === 'logs'}
         <section class="panel overflow-hidden">

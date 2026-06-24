@@ -3,7 +3,9 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"opcua-studio/internal/opcua"
 )
@@ -47,6 +49,73 @@ func TestSelectedAndWatchedShareStaleValueState(t *testing.T) {
 	watched := set.Watched()
 	if !selected.Stale || len(watched) != 1 || !watched[0].Stale {
 		t.Fatalf("selected=%#v watched=%#v", selected, watched)
+	}
+}
+
+func TestSessionTrendRecordsObservedLiveValueUpdates(t *testing.T) {
+	set := NewInspectionSet()
+	set.Select(variable("ns=2;s=Level"))
+	first := opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "10", Status: "Good"}
+	second := opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "11", Status: "Good"}
+
+	set.ApplyLiveValue("ns=2;s=Level", first, nil)
+	set.ApplyLiveValue("ns=2;s=Level", second, nil)
+
+	trend := set.SessionTrend("ns=2;s=Level")
+	if len(trend.Nodes) != 1 {
+		t.Fatalf("observed nodes = %d, want 1: %#v", len(trend.Nodes), trend.Nodes)
+	}
+	if trend.Nodes[0].Node.NodeID != "ns=2;s=Level" || trend.Nodes[0].PointCount != 2 || trend.Nodes[0].LatestValue != "11" {
+		t.Fatalf("observed node summary = %#v", trend.Nodes[0])
+	}
+	if len(trend.Points) != 2 {
+		t.Fatalf("trend points = %d, want 2: %#v", len(trend.Points), trend.Points)
+	}
+	if trend.Points[0].Value != "11" || trend.Points[1].Value != "10" {
+		t.Fatalf("trend points should be newest-first: %#v", trend.Points)
+	}
+}
+
+func TestSessionTrendUsesSourceTimestampAsDisplayTime(t *testing.T) {
+	set := NewInspectionSet()
+	set.Select(variable("ns=2;s=Level"))
+	sourceTime := time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)
+	serverTime := time.Date(2026, 6, 24, 10, 31, 0, 0, time.UTC)
+
+	set.ApplyLiveValue("ns=2;s=Level", opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "10", SourceTimestamp: sourceTime, ServerTimestamp: serverTime}, nil)
+
+	trend := set.SessionTrend("ns=2;s=Level")
+	if trend.Points[0].Timestamp != sourceTime.Format(time.RFC3339Nano) {
+		t.Fatalf("display timestamp = %q, want source timestamp", trend.Points[0].Timestamp)
+	}
+}
+
+func TestSessionTrendKeepsObservedNodeAfterSubscriptionStops(t *testing.T) {
+	set := NewInspectionSet()
+	set.Watch(variable("ns=2;s=Level"))
+	set.ApplyLiveValue("ns=2;s=Level", opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "10", Status: "Good"}, nil)
+	set.Unwatch("ns=2;s=Level")
+
+	trend := set.SessionTrend("ns=2;s=Level")
+	if len(trend.Nodes) != 1 || len(trend.Points) != 1 {
+		t.Fatalf("expected observed node history to remain visible, got %#v", trend)
+	}
+}
+
+func TestSessionTrendRetainsLatestFiveHundredUpdates(t *testing.T) {
+	set := NewInspectionSet()
+	set.Select(variable("ns=2;s=Level"))
+
+	for update := 1; update <= 501; update++ {
+		set.ApplyLiveValue("ns=2;s=Level", opcua.LiveValue{NodeID: "ns=2;s=Level", Value: fmt.Sprint(update), Status: "Good"}, nil)
+	}
+
+	trend := set.SessionTrend("ns=2;s=Level")
+	if len(trend.Points) != 500 {
+		t.Fatalf("trend points = %d, want 500", len(trend.Points))
+	}
+	if trend.Points[0].Value != "501" || trend.Points[499].Value != "2" {
+		t.Fatalf("expected latest 500 points newest-first, got first=%q last=%q", trend.Points[0].Value, trend.Points[499].Value)
 	}
 }
 

@@ -172,3 +172,98 @@ export namespace opcua {
 
 }
 
+export namespace session {
+	
+	export class SessionTrendNode {
+	    node: opcua.AddressNode;
+	    latestValue: string;
+	    status: string;
+	    pointCount: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionTrendNode(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.node = this.convertValues(source["node"], opcua.AddressNode);
+	        this.latestValue = source["latestValue"];
+	        this.status = source["status"];
+	        this.pointCount = source["pointCount"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SessionTrendPoint {
+	    value: string;
+	    status: string;
+	    timestamp: string;
+	    sourceTimestamp: string;
+	    serverTimestamp: string;
+	    receivedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionTrendPoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.value = source["value"];
+	        this.status = source["status"];
+	        this.timestamp = source["timestamp"];
+	        this.sourceTimestamp = source["sourceTimestamp"];
+	        this.serverTimestamp = source["serverTimestamp"];
+	        this.receivedAt = source["receivedAt"];
+	    }
+	}
+	export class SessionTrendView {
+	    nodes: SessionTrendNode[];
+	    points: SessionTrendPoint[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionTrendView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.nodes = this.convertValues(source["nodes"], SessionTrendNode);
+	        this.points = this.convertValues(source["points"], SessionTrendPoint);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+

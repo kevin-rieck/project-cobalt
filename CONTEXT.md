@@ -36,6 +36,10 @@ _Avoid_: Gentle browsing, crawl, aggressive indexing
 A node in the Address Space that represents a readable, and sometimes writable, process value or state.
 _Avoid_: Tag, point, field
 
+**Observed Variable Node**:
+A Variable Node whose Live Value has been inspected or watched during the current Troubleshooting Session.
+_Avoid_: Trended node, sampled node, monitored node
+
 **Live Value**:
 The current value of a Variable Node together with its health and timestamp information.
 _Avoid_: Reading, datapoint, sample
@@ -61,5 +65,5 @@ A user-selected set of Variable Nodes whose Live Values remain readily available
 _Avoid_: Dashboard, monitor, pinned nodes, Live Monitor, Live View
 
 **Session Trend**:
-A temporary view of how a Live Value changes during the current Troubleshooting Session.
+A temporary view of Live Value updates observed for a Variable Node during the current Troubleshooting Session.
 _Avoid_: Historian, chart history, Trend Dashboard

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"opcua-studio/internal/opcua"
 )
@@ -17,6 +18,8 @@ const (
 	RequestWaitValue
 	RequestCancelSubscription
 )
+
+const sessionTrendPointLimit = 500
 
 // Request is a side-effect request emitted by InspectionSet.
 type Request struct {
@@ -43,15 +46,42 @@ type VariableNodeInspection struct {
 	UpdateCount    int
 }
 
+// SessionTrendPoint is one Live Value update observed during a Troubleshooting Session.
+type SessionTrendPoint struct {
+	Value           string `json:"value"`
+	Status          string `json:"status"`
+	Timestamp       string `json:"timestamp"`
+	SourceTimestamp string `json:"sourceTimestamp"`
+	ServerTimestamp string `json:"serverTimestamp"`
+	ReceivedAt      string `json:"receivedAt"`
+}
+
+// SessionTrendNode summarizes an Observed Variable Node available in Session Trend.
+type SessionTrendNode struct {
+	Node        opcua.AddressNode `json:"node"`
+	LatestValue string            `json:"latestValue"`
+	Status      string            `json:"status"`
+	PointCount  int               `json:"pointCount"`
+}
+
+// SessionTrendView contains the Observed Variable Nodes and newest-first points for one node.
+type SessionTrendView struct {
+	Nodes  []SessionTrendNode  `json:"nodes"`
+	Points []SessionTrendPoint `json:"points"`
+}
+
 // InspectionSet owns selected and watched Variable Node Inspections.
 type InspectionSet struct {
 	selectedNodeID string
 	inspections    map[string]*VariableNodeInspection
 	watchOrder     []string
+	trendOrder     []string
+	trendNodes     map[string]opcua.AddressNode
+	trends         map[string][]SessionTrendPoint
 }
 
 func NewInspectionSet() *InspectionSet {
-	return &InspectionSet{inspections: map[string]*VariableNodeInspection{}}
+	return &InspectionSet{inspections: map[string]*VariableNodeInspection{}, trendNodes: map[string]opcua.AddressNode{}, trends: map[string][]SessionTrendPoint{}}
 }
 
 func (s *InspectionSet) Select(node opcua.AddressNode) []Request {
@@ -138,6 +168,7 @@ func (s *InspectionSet) ApplyLiveValue(nodeID string, value opcua.LiveValue, err
 	inspection.Stale = false
 	inspection.OutOfRange = outOfRangeText(value.Value, inspection.Details.EURange)
 	inspection.UpdateCount++
+	s.appendTrendPoint(inspection.Node, value)
 	if inspection.Updates == nil {
 		return nil
 	}
@@ -194,6 +225,31 @@ func (s *InspectionSet) Inspection(nodeID string) (VariableNodeInspection, bool)
 	return *inspection, true
 }
 
+func (s *InspectionSet) SessionTrend(focusedNodeID string) SessionTrendView {
+	view := SessionTrendView{Nodes: make([]SessionTrendNode, 0, len(s.trendOrder))}
+	for _, nodeID := range s.trendOrder {
+		points := s.trends[nodeID]
+		if len(points) == 0 {
+			continue
+		}
+		node, ok := s.trendNodes[nodeID]
+		if !ok {
+			continue
+		}
+		latest := points[len(points)-1]
+		view.Nodes = append(view.Nodes, SessionTrendNode{Node: node, LatestValue: latest.Value, Status: latest.Status, PointCount: len(points)})
+	}
+	if focusedNodeID == "" && len(view.Nodes) > 0 {
+		focusedNodeID = view.Nodes[0].Node.NodeID
+	}
+	points := s.trends[focusedNodeID]
+	view.Points = make([]SessionTrendPoint, 0, len(points))
+	for i := len(points) - 1; i >= 0; i-- {
+		view.Points = append(view.Points, points[i])
+	}
+	return view
+}
+
 func (s *InspectionSet) ensure(node opcua.AddressNode) *VariableNodeInspection {
 	if s.inspections == nil {
 		s.inspections = map[string]*VariableNodeInspection{}
@@ -219,6 +275,49 @@ func (s *InspectionSet) startRequests(inspection *VariableNodeInspection) []Requ
 		requests = append(requests, Request{Kind: RequestReadDetails, NodeID: inspection.Node.NodeID})
 	}
 	return requests
+}
+
+func (s *InspectionSet) appendTrendPoint(node opcua.AddressNode, value opcua.LiveValue) {
+	if s.trends == nil {
+		s.trends = map[string][]SessionTrendPoint{}
+	}
+	if s.trendNodes == nil {
+		s.trendNodes = map[string]opcua.AddressNode{}
+	}
+	s.trendNodes[node.NodeID] = node
+	if _, ok := s.trends[node.NodeID]; !ok {
+		s.trendOrder = append(s.trendOrder, node.NodeID)
+	}
+	receivedAt := time.Now().Format(time.RFC3339Nano)
+	point := SessionTrendPoint{
+		Value:           value.Value,
+		Status:          value.Status,
+		Timestamp:       displayTimestamp(value, receivedAt),
+		SourceTimestamp: formatTimestamp(value.SourceTimestamp),
+		ServerTimestamp: formatTimestamp(value.ServerTimestamp),
+		ReceivedAt:      receivedAt,
+	}
+	s.trends[node.NodeID] = append(s.trends[node.NodeID], point)
+	if len(s.trends[node.NodeID]) > sessionTrendPointLimit {
+		s.trends[node.NodeID] = s.trends[node.NodeID][len(s.trends[node.NodeID])-sessionTrendPointLimit:]
+	}
+}
+
+func displayTimestamp(value opcua.LiveValue, receivedAt string) string {
+	if !value.SourceTimestamp.IsZero() {
+		return formatTimestamp(value.SourceTimestamp)
+	}
+	if !value.ServerTimestamp.IsZero() {
+		return formatTimestamp(value.ServerTimestamp)
+	}
+	return receivedAt
+}
+
+func formatTimestamp(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.Format(time.RFC3339Nano)
 }
 
 func outOfRangeText(value string, valueRange *opcua.ValueRange) string {

@@ -26,6 +26,10 @@ export function GetDiagnosticLogs() {
   return window['go']['main']['App']['GetDiagnosticLogs']();
 }
 
+export function GetSessionTrend(arg1) {
+  return window['go']['main']['App']['GetSessionTrend'](arg1);
+}
+
 export function GetWatchlist() {
   return window['go']['main']['App']['GetWatchlist']();
 }

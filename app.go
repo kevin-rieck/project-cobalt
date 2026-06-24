@@ -15,6 +15,7 @@ import (
 const (
 	eventVariableInspectionUpdated = "variable-inspection-updated"
 	eventWatchlistUpdated          = "watchlist-updated"
+	eventSessionTrendUpdated       = "session-trend-updated"
 	eventDiagnosticLogAppended     = "diagnostic-log-appended"
 )
 
@@ -25,8 +26,9 @@ type App struct {
 	mu          sync.Mutex
 	client      opcua.Client
 	inspections *session.InspectionSet
-	logs        []DiagnosticLogEntry
-	connected   bool
+	logs               []DiagnosticLogEntry
+	connected          bool
+	trendNotifyPending bool
 }
 
 // NewApp creates a new App application struct.
@@ -112,6 +114,7 @@ func (a *App) Connect(request ConnectionRequest) error {
 	a.mu.Unlock()
 	a.emitInspection(nil)
 	a.emitWatchlist()
+	a.emitSessionTrendUpdated()
 	a.appendLog("info", "Connected")
 	return nil
 }
@@ -129,6 +132,7 @@ func (a *App) Disconnect() error {
 	a.mu.Unlock()
 	a.emitInspection(nil)
 	a.emitWatchlist()
+	a.emitSessionTrendUpdated()
 	a.appendLog("info", "Disconnected")
 	return nil
 }
@@ -205,6 +209,12 @@ func (a *App) GetWatchlist() []WatchlistRowView {
 	return a.watchlistLocked()
 }
 
+func (a *App) GetSessionTrend(focusedNodeID string) session.SessionTrendView {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.inspections.SessionTrend(focusedNodeID)
+}
+
 func (a *App) GetDiagnosticLogs() []DiagnosticLogEntry {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -253,6 +263,7 @@ func (a *App) subscribeValue(nodeID string) {
 		a.mu.Unlock()
 		a.emitInspection(view)
 		a.emitWatchlistRows(rows)
+		a.scheduleSessionTrendUpdate()
 		a.executeInspectionRequests(requests)
 	}
 }
@@ -345,6 +356,28 @@ func (a *App) emitWatchlist() {
 func (a *App) emitWatchlistRows(rows []WatchlistRowView) {
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, eventWatchlistUpdated, rows)
+	}
+}
+
+func (a *App) scheduleSessionTrendUpdate() {
+	a.mu.Lock()
+	if a.trendNotifyPending {
+		a.mu.Unlock()
+		return
+	}
+	a.trendNotifyPending = true
+	a.mu.Unlock()
+	time.AfterFunc(250*time.Millisecond, func() {
+		a.mu.Lock()
+		a.trendNotifyPending = false
+		a.mu.Unlock()
+		a.emitSessionTrendUpdated()
+	})
+}
+
+func (a *App) emitSessionTrendUpdated() {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, eventSessionTrendUpdated)
 	}
 }
 

@@ -26,6 +26,10 @@ export function GetDiagnosticLogs() {
   return window['go']['main']['App']['GetDiagnosticLogs']();
 }
 
+export function GetSavedConnections() {
+  return window['go']['main']['App']['GetSavedConnections']();
+}
+
 export function GetSessionTrend(arg1) {
   return window['go']['main']['App']['GetSessionTrend'](arg1);
 }
@@ -44,6 +48,10 @@ export function PickClientCertificate() {
 
 export function PickClientPrivateKey() {
   return window['go']['main']['App']['PickClientPrivateKey']();
+}
+
+export function SaveSavedConnection(arg1) {
+  return window['go']['main']['App']['SaveSavedConnection'](arg1);
 }
 
 export function SearchAddressSpace(arg1) {

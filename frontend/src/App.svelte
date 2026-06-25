@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, SearchAddressSpace, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
+  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, SaveSavedConnection, SearchAddressSpace, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
 
   type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
@@ -106,6 +106,20 @@
 
   type DiagnosticLogEntry = { timestamp: string; level: string; message: string }
 
+  type SavedConnection = {
+    name: string
+    endpoint: string
+    securityPolicy: string
+    securityMode: string
+    authType: string
+    username?: string
+    clientCertificatePath?: string
+    clientPrivateKeyPath?: string
+    serverCertificateThumbprint?: string
+    createdAt: string
+    updatedAt: string
+  }
+
   const objectsRoot: TreeNode = {
     key: 'root:i=85',
     node: { NodeID: 'i=85', DisplayName: 'Objects', BrowseName: 'Objects', NodeClass: 'Object' },
@@ -117,6 +131,7 @@
   }
 
   let activeTab: Tab = 'connections'
+  let connectionName = ''
   let endpointText = 'opc.tcp://localhost:4840'
   let endpoints: Endpoint[] = []
   let selectedEndpoint = 0
@@ -130,6 +145,8 @@
   let connected = false
   let connectionError = ''
   let currentConnection = ''
+  let savedConnections: SavedConnection[] = []
+  let savingConnection = false
   let tree: TreeNode[] = [{ ...objectsRoot }]
   let selectedNodeID = ''
   let inspection: Inspection | null = null
@@ -153,6 +170,7 @@
 
   onMount(async () => {
     logs = await GetDiagnosticLogs()
+    savedConnections = await GetSavedConnections()
     watchlist = await GetWatchlist()
     sessionTrend = await GetSessionTrend(focusedTrendNodeID)
     const offInspection = EventsOn('variable-inspection-updated', (payload: Inspection | null) => {
@@ -211,6 +229,7 @@
     connectionError = ''
     try {
       await Connect({
+        name: connectionName,
         endpoint: endpointText,
         securityPolicy: selectedEndpointInfo.SecurityPolicy,
         securityMode: selectedEndpointInfo.SecurityMode,
@@ -238,6 +257,53 @@
     } finally {
       connecting = false
     }
+  }
+
+  async function saveCurrentConnection() {
+    if (!selectedEndpointInfo) return
+    savingConnection = true
+    connectionError = ''
+    try {
+      const saved = await SaveSavedConnection({
+        name: connectionName || endpointText,
+        endpoint: endpointText,
+        securityPolicy: selectedEndpointInfo.SecurityPolicy,
+        securityMode: selectedEndpointInfo.SecurityMode,
+        authType,
+        username,
+        password,
+        clientCertificatePath,
+        clientPrivateKeyPath,
+        serverThumbprint: selectedEndpointInfo.ServerThumbprint
+      })
+      savedConnections = await GetSavedConnections()
+      connectionName = saved.name
+      addToast('info', 'Saved Connection created')
+    } catch (error) {
+      connectionError = String(error)
+      addToast('error', connectionError)
+    } finally {
+      savingConnection = false
+    }
+  }
+
+  function useSavedConnection(saved: SavedConnection) {
+    connectionName = saved.name
+    endpointText = saved.endpoint
+    endpoints = [{
+      URL: saved.endpoint,
+      SecurityPolicy: saved.securityPolicy,
+      SecurityMode: saved.securityMode,
+      SecurityLevel: 0,
+      UserTokenTypes: saved.authType === 'UserName' ? ['UserName'] : ['Anonymous'],
+      ServerThumbprint: saved.serverCertificateThumbprint
+    }]
+    selectedEndpoint = 0
+    authType = saved.authType === 'UserName' ? 'UserName' : 'Anonymous'
+    username = saved.username || ''
+    password = ''
+    clientCertificatePath = saved.clientCertificatePath || ''
+    clientPrivateKeyPath = saved.clientPrivateKeyPath || ''
   }
 
   async function pickClientCertificate() {
@@ -562,11 +628,38 @@
           <div>
             <p class="label">Connection Manager</p>
             <h2 class="mt-xs text-3xl font-semibold">Connect to an OPC UA Server</h2>
-            <p class="mt-sm text-on-surface-variant">Manual endpoint discovery and read-only connection for the first desktop slice.</p>
+            <p class="mt-sm text-on-surface-variant">Create a Saved Connection from non-secret details, then reconnect from it after restarting OPC UA Studio.</p>
+          </div>
+
+          <div class="panel overflow-hidden">
+            <div class="flex items-center justify-between border-b border-outline-variant p-md">
+              <div><p class="label">Saved Connections</p><h3 class="text-xl font-semibold">Reconnect details</h3></div>
+              <span class="rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-on-surface-variant">{savedConnections.length}</span>
+            </div>
+            {#if savedConnections.length === 0}
+              <div class="p-lg text-on-surface-variant">No Saved Connections yet. Discover an endpoint, enter non-secret details, and choose Save Connection.</div>
+            {:else}
+              <div class="divide-y divide-outline-variant">
+                {#each savedConnections as saved (saved.name)}
+                  <button class="block w-full p-md text-left transition-colors hover:bg-surface-container-high" on:click={() => useSavedConnection(saved)}>
+                    <div class="flex items-center justify-between gap-md">
+                      <span class="font-semibold text-on-surface">{saved.name}</span>
+                      <span class="rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-primary">{saved.authType}</span>
+                    </div>
+                    <p class="mt-xs truncate font-mono text-sm text-on-surface-variant">{saved.endpoint}</p>
+                    <p class="mt-xs truncate text-xs text-on-surface-variant">{saved.securityPolicy || 'None'} / {saved.securityMode || 'None'}{saved.username ? ` • ${saved.username}` : ''}</p>
+                  </button>
+                {/each}
+              </div>
+            {/if}
           </div>
 
           <div class="panel p-lg">
-            <div class="grid gap-md lg:grid-cols-[1fr_auto]">
+            <div class="grid gap-md lg:grid-cols-[1fr_1fr_auto]">
+              <label class="space-y-xs">
+                <span class="label">Saved Connection Name</span>
+                <input class="field w-full" bind:value={connectionName} placeholder="Control Gateway" />
+              </label>
               <label class="space-y-xs">
                 <span class="label">Endpoint</span>
                 <input class="field w-full" bind:value={endpointText} placeholder="opc.tcp://host:4840" />
@@ -631,7 +724,10 @@
                     </label>
                   </div>
                 {/if}
-                <button class="btn-primary w-full" on:click={connect} disabled={!canConnect}>{connecting ? 'Connecting…' : 'Connect'}</button>
+                <div class="grid grid-cols-2 gap-sm">
+                  <button class="btn-secondary w-full" on:click={saveCurrentConnection} disabled={!selectedEndpointInfo || savingConnection}>{savingConnection ? 'Saving…' : 'Save Connection'}</button>
+                  <button class="btn-primary w-full" on:click={connect} disabled={!canConnect}>{connecting ? 'Connecting…' : 'Connect'}</button>
+                </div>
                 {#if selectedEndpointIsSecure && (!clientCertificatePath || !clientPrivateKeyPath)}
                   <p class="text-sm text-tertiary">Provide a client certificate and private key to connect to this secure endpoint.</p>
                 {:else}

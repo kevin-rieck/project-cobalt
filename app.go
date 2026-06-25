@@ -8,6 +8,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"opcua-studio/internal/connections"
 	"opcua-studio/internal/opcua"
 	"opcua-studio/internal/search"
 	"opcua-studio/internal/session"
@@ -29,18 +30,31 @@ type App struct {
 	inspections        *session.InspectionSet
 	addressSpaceSearch *search.Service
 	logs               []DiagnosticLogEntry
+	savedConnections   []connections.SavedConnection
+	savedStore         *connections.FileStore
 	connected          bool
 	trendNotifyPending bool
 }
 
 // NewApp creates a new App application struct.
 func NewApp() *App {
-	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService()}
+	return NewAppWithSavedConnectionStore(connections.DefaultStorePath())
+}
+
+func NewAppWithSavedConnectionStore(path string) *App {
+	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}}
 }
 
 // startup is called when the app starts. The context is saved so we can emit runtime events.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	if saved, err := a.savedStore.Load(); err != nil {
+		a.appendLog("error", fmt.Sprintf("Loading Saved Connections failed: %v", err))
+	} else {
+		a.mu.Lock()
+		a.savedConnections = saved
+		a.mu.Unlock()
+	}
 	a.appendLog("info", "OPC UA Studio started")
 }
 
@@ -51,6 +65,7 @@ type DiagnosticLogEntry struct {
 }
 
 type ConnectionRequest struct {
+	Name                  string         `json:"name"`
 	Endpoint              string         `json:"endpoint"`
 	SecurityPolicy        string         `json:"securityPolicy"`
 	SecurityMode          string         `json:"securityMode"`
@@ -101,6 +116,43 @@ func (a *App) DiscoverEndpoints(endpoint string) ([]opcua.Endpoint, error) {
 	}
 	a.appendLog("info", fmt.Sprintf("Discovered %d endpoints", len(endpoints)))
 	return endpoints, nil
+}
+
+func (a *App) GetSavedConnections() []connections.SavedConnection {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	saved := make([]connections.SavedConnection, len(a.savedConnections))
+	copy(saved, a.savedConnections)
+	return saved
+}
+
+func (a *App) SaveSavedConnection(request ConnectionRequest) (connections.SavedConnection, error) {
+	saved, err := a.savedStore.Save(connections.SaveRequest{
+		Name:                        request.Name,
+		Endpoint:                    request.Endpoint,
+		SecurityPolicy:              request.SecurityPolicy,
+		SecurityMode:                request.SecurityMode,
+		AuthType:                    string(request.AuthType),
+		Username:                    request.Username,
+		Password:                    request.Password,
+		ClientCertificatePath:       request.ClientCertificatePath,
+		ClientPrivateKeyPath:        request.ClientPrivateKeyPath,
+		ServerCertificateThumbprint: request.ServerThumbprint,
+	}, time.Now())
+	if err != nil {
+		a.appendLog("error", fmt.Sprintf("Saving Saved Connection failed: %v", err))
+		return connections.SavedConnection{}, err
+	}
+	a.mu.Lock()
+	a.savedConnections, err = a.savedStore.Load()
+	if err != nil {
+		a.mu.Unlock()
+		a.appendLog("error", fmt.Sprintf("Reloading Saved Connections failed: %v", err))
+		return connections.SavedConnection{}, err
+	}
+	a.mu.Unlock()
+	a.appendLog("info", fmt.Sprintf("Saved Connection %q", saved.Name))
+	return saved, nil
 }
 
 func (a *App) Connect(request ConnectionRequest) error {

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, SaveSavedConnection, SearchAddressSpace, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
+  import { getReadmeScreenshotState } from './readmeScreenshots'
 
   type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
   type AuthType = 'Anonymous' | 'UserName'
@@ -122,6 +123,8 @@
     lastConnectedAt?: string
   }
 
+  const readmeScreenshotState = getReadmeScreenshotState()
+
   const objectsRoot: TreeNode = {
     key: 'root:i=85',
     node: { NodeID: 'i=85', DisplayName: 'Objects', BrowseName: 'Objects', NodeClass: 'Object' },
@@ -132,10 +135,10 @@
     error: ''
   }
 
-  let activeTab: Tab = 'connections'
+  let activeTab: Tab = readmeScreenshotState?.activeTab ?? 'connections'
   let connectionName = ''
   let endpointText = 'opc.tcp://localhost:4840'
-  let endpoints: Endpoint[] = []
+  let endpoints: Endpoint[] = (readmeScreenshotState?.endpoints as Endpoint[]) ?? []
   let selectedEndpoint = 0
   let authType: AuthType = 'Anonymous'
   let username = ''
@@ -144,24 +147,24 @@
   let clientPrivateKeyPath = ''
   let discovering = false
   let connecting = false
-  let connected = false
+  let connected = readmeScreenshotState?.connected ?? false
   let connectionError = ''
-  let currentConnection = ''
-  let savedConnections: SavedConnection[] = []
+  let currentConnection = readmeScreenshotState?.currentConnection ?? ''
+  let savedConnections: SavedConnection[] = (readmeScreenshotState?.savedConnections as SavedConnection[]) ?? []
   let savingConnection = false
   let deletingSavedConnectionID = ''
   let editingSavedConnectionID = ''
   let editingSavedConnectionName = ''
-  let tree: TreeNode[] = [{ ...objectsRoot }]
-  let selectedNodeID = ''
-  let inspection: Inspection | null = null
-  let watchlist: WatchlistRow[] = []
-  let sessionTrend: SessionTrendView = { nodes: [], points: [] }
-  let focusedTrendNodeID = ''
+  let tree: TreeNode[] = (readmeScreenshotState?.tree as TreeNode[]) ?? [{ ...objectsRoot }]
+  let selectedNodeID = readmeScreenshotState?.selectedNodeID ?? ''
+  let inspection: Inspection | null = (readmeScreenshotState?.inspection as Inspection) ?? null
+  let watchlist: WatchlistRow[] = (readmeScreenshotState?.watchlist as WatchlistRow[]) ?? []
+  let sessionTrend: SessionTrendView = (readmeScreenshotState?.sessionTrend as SessionTrendView) ?? { nodes: [], points: [] }
+  let focusedTrendNodeID = readmeScreenshotState?.focusedTrendNodeID ?? ''
   let logs: DiagnosticLogEntry[] = []
   let toasts: { id: number; level: string; message: string }[] = []
-  let searchQuery = ''
-  let searchView: AddressSpaceSearchView = { query: '', results: [], status: 'Connect to an OPC UA Server to search browsed Address Space metadata.' }
+  let searchQuery = readmeScreenshotState?.searchQuery ?? ''
+  let searchView: AddressSpaceSearchView = (readmeScreenshotState?.searchView as AddressSpaceSearchView) ?? { query: '', results: [], status: 'Connect to an OPC UA Server to search browsed Address Space metadata.' }
   let searching = false
   let searchDebounce: ReturnType<typeof setTimeout> | null = null
 
@@ -176,6 +179,8 @@
   $: visibleTree = tree.filter((_, index) => !isHidden(index))
 
   onMount(async () => {
+    if (readmeScreenshotState) return
+
     logs = await GetDiagnosticLogs()
     savedConnections = await GetSavedConnections()
     watchlist = await GetWatchlist()

@@ -7,12 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "screenshots:readme": "node scripts/capture-readme-screenshots.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^1.0.1",
     "@tsconfig/svelte": "^3.0.0",
     "autoprefixer": "^10.4.20",
+    "playwright": "^1.61.1",
     "postcss": "^8.4.49",
     "svelte": "^3.49.0",
     "svelte-check": "^2.8.0",

@@ -76,7 +76,7 @@ func (s *FileStore) Load() ([]SavedConnection, error) {
 	}
 	var saved []SavedConnection
 	if err := json.Unmarshal(contents, &saved); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Saved Connection storage is not valid JSON: %w", err)
 	}
 	if saved == nil {
 		return []SavedConnection{}, nil

@@ -44,6 +44,29 @@ func TestStoreSavesAndReloadsSavedConnection(t *testing.T) {
 	}
 }
 
+func TestStoreReturnsDiagnosticForCorruptJSONWithoutDestroyingStorage(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	corruptStorage := []byte(`[{"name":"Control Gateway",`)
+	if err := os.WriteFile(path, corruptStorage, 0o600); err != nil {
+		t.Fatalf("write corrupt storage: %v", err)
+	}
+
+	_, err := NewFileStore(path).Load()
+	if err == nil {
+		t.Fatalf("Load() error = nil, want corrupt JSON diagnostic")
+	}
+	if !strings.Contains(err.Error(), "Saved Connection storage is not valid JSON") {
+		t.Fatalf("Load() error = %q, want corrupt JSON diagnostic", err)
+	}
+	contents, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error = %v", readErr)
+	}
+	if string(contents) != string(corruptStorage) {
+		t.Fatalf("corrupt storage was changed to %q, want original %q", contents, corruptStorage)
+	}
+}
+
 func TestStoreLoadsEmptyListFromMissingOrEmptyStorage(t *testing.T) {
 	path := t.TempDir() + "/saved-connections.json"
 	store := NewFileStore(path)
@@ -65,6 +88,41 @@ func TestStoreLoadsEmptyListFromMissingOrEmptyStorage(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Fatalf("Load() empty storage returned %d Saved Connections, want 0", len(empty))
+	}
+}
+
+func TestStorePreservesMissingClientCertificateAndPrivateKeyPaths(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	store := NewFileStore(path)
+	missingCertificatePath := path + ".missing-client.crt"
+	missingPrivateKeyPath := path + ".missing-client.key"
+
+	if _, err := os.Stat(missingCertificatePath); !os.IsNotExist(err) {
+		t.Fatalf("test certificate path unexpectedly exists or stat failed differently: %v", err)
+	}
+	if _, err := os.Stat(missingPrivateKeyPath); !os.IsNotExist(err) {
+		t.Fatalf("test private key path unexpectedly exists or stat failed differently: %v", err)
+	}
+
+	_, err := store.Save(SaveRequest{
+		Name:                  "Control Gateway",
+		Endpoint:              "opc.tcp://gateway.local:4840",
+		SecurityPolicy:        "Basic256Sha256",
+		SecurityMode:          "MessageSecurityModeSignAndEncrypt",
+		AuthType:              "Anonymous",
+		ClientCertificatePath: missingCertificatePath,
+		ClientPrivateKeyPath:  missingPrivateKeyPath,
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("Save() with missing certificate/key paths error = %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].ClientCertificatePath != missingCertificatePath || loaded[0].ClientPrivateKeyPath != missingPrivateKeyPath {
+		t.Fatalf("loaded Saved Connection paths = %#v, want missing paths preserved", loaded)
 	}
 }
 

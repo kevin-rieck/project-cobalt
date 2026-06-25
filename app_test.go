@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +61,41 @@ func TestAppLoadsSavedConnectionsOnStartup(t *testing.T) {
 	}
 	if saved[0].Name != "Control Gateway" || saved[0].Endpoint != "opc.tcp://gateway.local:4840" {
 		t.Fatalf("loaded Saved Connection = %#v", saved[0])
+	}
+}
+
+func TestStartupWithCorruptSavedConnectionStorageLogsDiagnosticAndManualConnectStillWorks(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	corruptStorage := []byte(`[{"name":"Control Gateway",`)
+	if err := os.WriteFile(path, corruptStorage, 0o600); err != nil {
+		t.Fatalf("write corrupt storage: %v", err)
+	}
+
+	client := &recordingClient{}
+	app := NewAppWithSavedConnectionStore(path)
+	app.client = client
+	app.startup(nil)
+
+	logs := app.GetDiagnosticLogs()
+	if len(logs) == 0 || !strings.Contains(logs[0].Message, "Saved Connection storage is not valid JSON") {
+		t.Fatalf("diagnostic logs = %#v, want corrupt Saved Connection storage diagnostic", logs)
+	}
+	if saved := app.GetSavedConnections(); len(saved) != 0 {
+		t.Fatalf("GetSavedConnections() = %#v, want no loaded Saved Connections", saved)
+	}
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://manual.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("manual Connect() error = %v", err)
+	}
+	if len(client.connectRequests) != 1 || client.connectRequests[0].Endpoint != "opc.tcp://manual.local:4840" {
+		t.Fatalf("manual Connect() requests = %#v", client.connectRequests)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(contents) != string(corruptStorage) {
+		t.Fatalf("corrupt storage was changed to %q, want original %q", contents, corruptStorage)
 	}
 }
 

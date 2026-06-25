@@ -3,8 +3,10 @@ package connections
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -29,6 +31,9 @@ type SavedConnection struct {
 // are intentionally accepted here only so the store can ignore them at the
 // persistence boundary.
 type SaveRequest struct {
+	// ExistingName identifies the Saved Connection being edited. It is empty
+	// when creating or overwriting by the requested name.
+	ExistingName                string
 	Name                        string
 	Endpoint                    string
 	SecurityPolicy              string
@@ -79,6 +84,10 @@ func (s *FileStore) Load() ([]SavedConnection, error) {
 }
 
 func (s *FileStore) Save(request SaveRequest, now time.Time) (SavedConnection, error) {
+	request.Name = strings.TrimSpace(request.Name)
+	if request.Name == "" {
+		return SavedConnection{}, fmt.Errorf("Saved Connection name is required")
+	}
 	existing, err := s.Load()
 	if err != nil {
 		return SavedConnection{}, err
@@ -96,13 +105,29 @@ func (s *FileStore) Save(request SaveRequest, now time.Time) (SavedConnection, e
 		CreatedAt:                   now,
 		UpdatedAt:                   now,
 	}
+	targetName := strings.TrimSpace(request.ExistingName)
+	targetIndex := -1
 	for i, candidate := range existing {
-		if candidate.Name == saved.Name {
-			saved.CreatedAt = candidate.CreatedAt
-			saved.LastConnectedAt = candidate.LastConnectedAt
-			existing[i] = saved
-			return saved, s.write(existing)
+		if targetName != "" && strings.EqualFold(candidate.Name, targetName) {
+			targetIndex = i
+			break
 		}
+		if targetName == "" && strings.EqualFold(candidate.Name, saved.Name) {
+			targetIndex = i
+			break
+		}
+	}
+	for i, candidate := range existing {
+		if i != targetIndex && strings.EqualFold(candidate.Name, saved.Name) {
+			return SavedConnection{}, fmt.Errorf("Saved Connection name %q already exists", saved.Name)
+		}
+	}
+	if targetIndex >= 0 {
+		candidate := existing[targetIndex]
+		saved.CreatedAt = candidate.CreatedAt
+		saved.LastConnectedAt = candidate.LastConnectedAt
+		existing[targetIndex] = saved
+		return saved, s.write(existing)
 	}
 	existing = append(existing, saved)
 	return saved, s.write(existing)

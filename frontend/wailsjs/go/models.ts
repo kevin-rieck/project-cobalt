@@ -61,6 +61,7 @@ export namespace connections {
 export namespace main {
 	
 	export class ConnectionRequest {
+	    existingName: string;
 	    name: string;
 	    endpoint: string;
 	    securityPolicy: string;
@@ -78,6 +79,7 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.existingName = source["existingName"];
 	        this.name = source["name"];
 	        this.endpoint = source["endpoint"];
 	        this.securityPolicy = source["securityPolicy"];

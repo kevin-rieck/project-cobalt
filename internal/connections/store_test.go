@@ -68,6 +68,129 @@ func TestStoreLoadsEmptyListFromMissingOrEmptyStorage(t *testing.T) {
 	}
 }
 
+func TestStoreRequiresSavedConnectionName(t *testing.T) {
+	store := NewFileStore(t.TempDir() + "/saved-connections.json")
+
+	_, err := store.Save(SaveRequest{Name: "  ", Endpoint: "opc.tcp://gateway.local:4840"}, time.Now())
+	if err == nil {
+		t.Fatalf("Save() error = nil, want name required")
+	}
+	if !strings.Contains(err.Error(), "Saved Connection name is required") {
+		t.Fatalf("Save() error = %q, want clear name required message", err)
+	}
+}
+
+func TestStoreUpdatesExistingSavedConnectionWhenNameDiffersOnlyByCase(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	store := NewFileStore(path)
+	createdAt := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Hour)
+
+	_, err := store.Save(SaveRequest{Name: "Control Gateway", Endpoint: "opc.tcp://gateway.local:4840", AuthType: "Anonymous"}, createdAt)
+	if err != nil {
+		t.Fatalf("seed Saved Connection: %v", err)
+	}
+
+	saved, err := store.Save(SaveRequest{Name: "control gateway", Endpoint: "opc.tcp://gateway.local:4841", AuthType: "UserName", Username: "engineer"}, updatedAt)
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(reloaded) != 1 {
+		t.Fatalf("Load() returned %d Saved Connections, want 1", len(reloaded))
+	}
+	if saved.CreatedAt != createdAt || saved.UpdatedAt != updatedAt {
+		t.Fatalf("timestamps = %s/%s, want %s/%s", saved.CreatedAt, saved.UpdatedAt, createdAt, updatedAt)
+	}
+	if reloaded[0].Name != "control gateway" || reloaded[0].Endpoint != "opc.tcp://gateway.local:4841" || reloaded[0].Username != "engineer" {
+		t.Fatalf("updated Saved Connection = %#v", reloaded[0])
+	}
+}
+
+func TestStoreRenamesExistingSavedConnectionWithoutCreatingDuplicate(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	store := NewFileStore(path)
+	createdAt := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Hour)
+
+	_, err := store.Save(SaveRequest{Name: "Control Gateway", Endpoint: "opc.tcp://gateway.local:4840", AuthType: "Anonymous"}, createdAt)
+	if err != nil {
+		t.Fatalf("seed Saved Connection: %v", err)
+	}
+
+	saved, err := store.Save(SaveRequest{ExistingName: "Control Gateway", Name: "Packaging Line", Endpoint: "opc.tcp://packaging.local:4840", AuthType: "UserName", Username: "engineer"}, updatedAt)
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(reloaded) != 1 {
+		t.Fatalf("Load() returned %d Saved Connections, want 1", len(reloaded))
+	}
+	if saved.Name != "Packaging Line" || saved.CreatedAt != createdAt || saved.UpdatedAt != updatedAt {
+		t.Fatalf("renamed Saved Connection = %#v", saved)
+	}
+	if reloaded[0].Name != "Packaging Line" || reloaded[0].Endpoint != "opc.tcp://packaging.local:4840" || reloaded[0].Username != "engineer" {
+		t.Fatalf("reloaded Saved Connection = %#v", reloaded[0])
+	}
+}
+
+func TestStoreRejectsRenamingSavedConnectionToAnotherSavedConnectionName(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	store := NewFileStore(path)
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	if _, err := store.Save(SaveRequest{Name: "Control Gateway", Endpoint: "opc.tcp://gateway.local:4840"}, now); err != nil {
+		t.Fatalf("seed first Saved Connection: %v", err)
+	}
+	if _, err := store.Save(SaveRequest{Name: "Packaging Line", Endpoint: "opc.tcp://packaging.local:4840"}, now); err != nil {
+		t.Fatalf("seed second Saved Connection: %v", err)
+	}
+
+	_, err := store.Save(SaveRequest{ExistingName: "Control Gateway", Name: "packaging line", Endpoint: "opc.tcp://gateway.local:4841"}, now.Add(time.Hour))
+	if err == nil {
+		t.Fatalf("Save() error = nil, want duplicate name rejected")
+	}
+	if !strings.Contains(err.Error(), "Saved Connection name \"packaging line\" already exists") {
+		t.Fatalf("Save() error = %q, want clear duplicate name message", err)
+	}
+
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(reloaded) != 2 || reloaded[0].Name != "Control Gateway" || reloaded[1].Name != "Packaging Line" {
+		t.Fatalf("Saved Connections changed after rejected rename: %#v", reloaded)
+	}
+}
+
+func TestStoreAllowsDifferentSavedConnectionNamesForSameEndpoint(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	store := NewFileStore(path)
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+
+	if _, err := store.Save(SaveRequest{Name: "Control Gateway", Endpoint: "opc.tcp://gateway.local:4840"}, now); err != nil {
+		t.Fatalf("save first Saved Connection: %v", err)
+	}
+	if _, err := store.Save(SaveRequest{Name: "Line 2 Gateway", Endpoint: "opc.tcp://gateway.local:4840"}, now.Add(time.Hour)); err != nil {
+		t.Fatalf("save second Saved Connection with same endpoint: %v", err)
+	}
+
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(reloaded) != 2 {
+		t.Fatalf("Load() returned %d Saved Connections, want 2", len(reloaded))
+	}
+}
+
 func TestStoreNeverPersistsPassword(t *testing.T) {
 	path := t.TempDir() + "/saved-connections.json"
 	store := NewFileStore(path)

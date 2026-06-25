@@ -148,6 +148,7 @@
   let currentConnection = ''
   let savedConnections: SavedConnection[] = []
   let savingConnection = false
+  let editingSavedConnectionName = ''
   let tree: TreeNode[] = [{ ...objectsRoot }]
   let selectedNodeID = ''
   let inspection: Inspection | null = null
@@ -168,6 +169,7 @@
   $: if (!canUseUsername && authType === 'UserName') authType = 'Anonymous'
   $: passwordRequired = authType === 'UserName'
   $: canConnect = !!selectedEndpointInfo && !connecting && (!passwordRequired || !!password) && (!selectedEndpointIsSecure || (!!clientCertificatePath && !!clientPrivateKeyPath))
+  $: canSaveConnection = !!selectedEndpointInfo && !savingConnection && connectionName.trim().length > 0
   $: visibleTree = tree.filter((_, index) => !isHidden(index))
 
   onMount(async () => {
@@ -231,6 +233,7 @@
     connectionError = ''
     try {
       await Connect({
+        existingName: '',
         name: connectionName,
         endpoint: endpointText,
         securityPolicy: selectedEndpointInfo.SecurityPolicy,
@@ -267,8 +270,10 @@
     savingConnection = true
     connectionError = ''
     try {
+      const wasEditing = editingSavedConnectionName !== ''
       const saved = await SaveSavedConnection({
-        name: connectionName || endpointText,
+        existingName: editingSavedConnectionName,
+        name: connectionName,
         endpoint: endpointText,
         securityPolicy: selectedEndpointInfo.SecurityPolicy,
         securityMode: selectedEndpointInfo.SecurityMode,
@@ -281,7 +286,8 @@
       })
       savedConnections = await GetSavedConnections()
       connectionName = saved.name
-      addToast('info', 'Saved Connection created')
+      editingSavedConnectionName = saved.name
+      addToast('info', wasEditing ? 'Saved Connection updated' : 'Saved Connection created')
     } catch (error) {
       connectionError = String(error)
       addToast('error', connectionError)
@@ -298,6 +304,7 @@
   }
 
   function useSavedConnection(saved: SavedConnection) {
+    editingSavedConnectionName = saved.name
     connectionName = saved.name
     endpointText = saved.endpoint
     endpoints = [{
@@ -315,7 +322,14 @@
     clientCertificatePath = saved.clientCertificatePath || ''
     clientPrivateKeyPath = saved.clientPrivateKeyPath || ''
     connectionError = ''
-    addToast('info', 'Saved Connection details populated. Press Connect when ready.')
+    addToast('info', 'Saved Connection details populated. Edit details, save changes, or press Connect.')
+  }
+
+  function startNewSavedConnection() {
+    editingSavedConnectionName = ''
+    connectionName = ''
+    connectionError = ''
+    addToast('info', 'Ready to create a new Saved Connection')
   }
 
   async function pickClientCertificate() {
@@ -646,7 +660,10 @@
           <div class="panel overflow-hidden">
             <div class="flex items-center justify-between border-b border-outline-variant p-md">
               <div><p class="label">Saved Connections</p><h3 class="text-xl font-semibold">Reconnect details</h3></div>
-              <span class="rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-on-surface-variant">{savedConnections.length}</span>
+              <div class="flex items-center gap-sm">
+                <button class="btn-secondary h-9" on:click={startNewSavedConnection}>New</button>
+                <span class="rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-on-surface-variant">{savedConnections.length}</span>
+              </div>
             </div>
             {#if savedConnections.length === 0}
               <div class="p-lg text-on-surface-variant">No Saved Connections yet. Discover an endpoint, enter non-secret details, and choose Save Connection.</div>
@@ -672,6 +689,7 @@
               <label class="space-y-xs">
                 <span class="label">Saved Connection Name</span>
                 <input class="field w-full" bind:value={connectionName} placeholder="Control Gateway" />
+                {#if editingSavedConnectionName}<span class="text-xs text-on-surface-variant">Editing {editingSavedConnectionName}</span>{/if}
               </label>
               <label class="space-y-xs">
                 <span class="label">Endpoint</span>
@@ -738,7 +756,7 @@
                   </div>
                 {/if}
                 <div class="grid grid-cols-2 gap-sm">
-                  <button class="btn-secondary w-full" on:click={saveCurrentConnection} disabled={!selectedEndpointInfo || savingConnection}>{savingConnection ? 'Saving…' : 'Save Connection'}</button>
+                  <button class="btn-secondary w-full" on:click={saveCurrentConnection} disabled={!canSaveConnection}>{savingConnection ? 'Saving…' : editingSavedConnectionName ? 'Save Changes' : 'Save Connection'}</button>
                   <button class="btn-primary w-full" on:click={connect} disabled={!canConnect}>{connecting ? 'Connecting…' : 'Connect'}</button>
                 </div>
                 {#if passwordRequired && !password}

@@ -108,6 +108,31 @@ func TestConnectWithSavedConnectionUpdatesLastConnectedTimeAfterSuccessfulConnec
 	}
 }
 
+func TestSaveSavedConnectionEditsExistingSavedConnection(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	store := connections.NewFileStore(path)
+	_, err := store.Save(connections.SaveRequest{Name: "Control Gateway", Endpoint: "opc.tcp://gateway.local:4840", AuthType: string(opcua.AuthAnonymous)}, time.Now())
+	if err != nil {
+		t.Fatalf("seed Saved Connection: %v", err)
+	}
+
+	app := NewAppWithSavedConnectionStore(path)
+	app.startup(nil)
+
+	_, err = app.SaveSavedConnection(ConnectionRequest{ExistingName: "Control Gateway", Name: "Packaging Line", Endpoint: "opc.tcp://packaging.local:4840", AuthType: opcua.AuthUsername, Username: "engineer"})
+	if err != nil {
+		t.Fatalf("SaveSavedConnection() error = %v", err)
+	}
+
+	saved := app.GetSavedConnections()
+	if len(saved) != 1 {
+		t.Fatalf("GetSavedConnections() returned %d Saved Connections, want 1", len(saved))
+	}
+	if saved[0].Name != "Packaging Line" || saved[0].Endpoint != "opc.tcp://packaging.local:4840" || saved[0].Username != "engineer" {
+		t.Fatalf("edited Saved Connection = %#v", saved[0])
+	}
+}
+
 func TestUsernameConnectRequiresPasswordEntry(t *testing.T) {
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
 	client := &recordingClient{}

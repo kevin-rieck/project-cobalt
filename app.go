@@ -66,6 +66,7 @@ type DiagnosticLogEntry struct {
 }
 
 type ConnectionRequest struct {
+	ExistingName          string         `json:"existingName"`
 	Name                  string         `json:"name"`
 	Endpoint              string         `json:"endpoint"`
 	SecurityPolicy        string         `json:"securityPolicy"`
@@ -129,6 +130,7 @@ func (a *App) GetSavedConnections() []connections.SavedConnection {
 
 func (a *App) SaveSavedConnection(request ConnectionRequest) (connections.SavedConnection, error) {
 	saved, err := a.savedStore.Save(connections.SaveRequest{
+		ExistingName:                request.ExistingName,
 		Name:                        request.Name,
 		Endpoint:                    request.Endpoint,
 		SecurityPolicy:              request.SecurityPolicy,

@@ -13,7 +13,7 @@ A locally stored set of non-secret details used to reconnect to an OPC UA Server
 _Avoid_: Profile, bookmark, credential, workspace
 
 **Read-Only Mode**:
-A state of OPC UA Studio where it does not perform write operations or method calls against the OPC UA Server.
+A state of OPC UA Studio where it does not perform write operations or mutating method calls against the OPC UA Server. Non-mutating query methods may still be used to inspect server information.
 _Avoid_: Safe mode, view-only mode, no-write mode
 
 **Client Certificate**:
@@ -32,9 +32,25 @@ _Avoid_: Server implementation, backend
 The browsable structure of an OPC UA Server, containing nodes and their relationships.
 _Avoid_: Tag tree, menu, file tree
 
+**Search Result**:
+An item returned by searching an OPC UA Server's functional names or Address Space metadata, pointing to a specific node or semantic reference in that server.
+_Avoid_: Asset, tag result, search hit
+
+**Alias Name**:
+A human-readable functional name exposed by an OPC UA Server that refers to one or more nodes independently of where those nodes live in the Address Space.
+_Avoid_: Asset name, friendly tag, display alias
+
+**Address Space Search**:
+Search across Alias Names and Address Space metadata to find Search Results without requiring the Automation Engineer to navigate the tree first.
+_Avoid_: Asset search, tag search, global search
+
 **Rate-Limited Browsing**:
 Browsing or indexing the Address Space at a bounded request rate to reduce load on an OPC UA Server.
 _Avoid_: Gentle browsing, crawl, aggressive indexing
+
+**Object Node**:
+A node in the Address Space that represents an entity, grouping, or component and may organize related Variable Nodes.
+_Avoid_: Asset, device card, folder
 
 **Variable Node**:
 A node in the Address Space that represents a readable, and sometimes writable, process value or state.

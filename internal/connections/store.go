@@ -11,17 +11,18 @@ import (
 // SavedConnection is the persisted, non-secret information needed to reconnect
 // to an OPC UA Server.
 type SavedConnection struct {
-	Name                        string    `json:"name"`
-	Endpoint                    string    `json:"endpoint"`
-	SecurityPolicy              string    `json:"securityPolicy"`
-	SecurityMode                string    `json:"securityMode"`
-	AuthType                    string    `json:"authType"`
-	Username                    string    `json:"username,omitempty"`
-	ClientCertificatePath       string    `json:"clientCertificatePath,omitempty"`
-	ClientPrivateKeyPath        string    `json:"clientPrivateKeyPath,omitempty"`
-	ServerCertificateThumbprint string    `json:"serverCertificateThumbprint,omitempty"`
-	CreatedAt                   time.Time `json:"createdAt"`
-	UpdatedAt                   time.Time `json:"updatedAt"`
+	Name                        string     `json:"name"`
+	Endpoint                    string     `json:"endpoint"`
+	SecurityPolicy              string     `json:"securityPolicy"`
+	SecurityMode                string     `json:"securityMode"`
+	AuthType                    string     `json:"authType"`
+	Username                    string     `json:"username,omitempty"`
+	ClientCertificatePath       string     `json:"clientCertificatePath,omitempty"`
+	ClientPrivateKeyPath        string     `json:"clientPrivateKeyPath,omitempty"`
+	ServerCertificateThumbprint string     `json:"serverCertificateThumbprint,omitempty"`
+	CreatedAt                   time.Time  `json:"createdAt"`
+	UpdatedAt                   time.Time  `json:"updatedAt"`
+	LastConnectedAt             *time.Time `json:"lastConnectedAt,omitempty"`
 }
 
 // SaveRequest accepts connection details from the app boundary. Secret fields
@@ -98,12 +99,28 @@ func (s *FileStore) Save(request SaveRequest, now time.Time) (SavedConnection, e
 	for i, candidate := range existing {
 		if candidate.Name == saved.Name {
 			saved.CreatedAt = candidate.CreatedAt
+			saved.LastConnectedAt = candidate.LastConnectedAt
 			existing[i] = saved
 			return saved, s.write(existing)
 		}
 	}
 	existing = append(existing, saved)
 	return saved, s.write(existing)
+}
+
+func (s *FileStore) MarkConnected(name string, now time.Time) (SavedConnection, bool, error) {
+	saved, err := s.Load()
+	if err != nil {
+		return SavedConnection{}, false, err
+	}
+	for i := range saved {
+		if saved[i].Name == name {
+			saved[i].LastConnectedAt = &now
+			saved[i].UpdatedAt = now
+			return saved[i], true, s.write(saved)
+		}
+	}
+	return SavedConnection{}, false, nil
 }
 
 func (s *FileStore) write(saved []SavedConnection) error {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -156,6 +157,11 @@ func (a *App) SaveSavedConnection(request ConnectionRequest) (connections.SavedC
 }
 
 func (a *App) Connect(request ConnectionRequest) error {
+	if request.AuthType == opcua.AuthUsername && strings.TrimSpace(request.Password) == "" {
+		err := fmt.Errorf("username authentication requires password entry at connect time")
+		a.appendLog("error", fmt.Sprintf("Connection failed: %v", err))
+		return err
+	}
 	connectRequest := opcua.ConnectRequest{
 		Endpoint:              request.Endpoint,
 		SecurityPolicy:        request.SecurityPolicy,
@@ -173,6 +179,19 @@ func (a *App) Connect(request ConnectionRequest) error {
 	if err := a.client.Connect(a.ctx, connectRequest); err != nil {
 		a.appendLog("error", fmt.Sprintf("Connection failed: %v", err))
 		return err
+	}
+	if request.Name != "" {
+		if _, ok, err := a.savedStore.MarkConnected(request.Name, time.Now()); err != nil {
+			a.appendLog("error", fmt.Sprintf("Updating Saved Connection last connected time failed: %v", err))
+		} else if ok {
+			if saved, err := a.savedStore.Load(); err != nil {
+				a.appendLog("error", fmt.Sprintf("Reloading Saved Connections failed: %v", err))
+			} else {
+				a.mu.Lock()
+				a.savedConnections = saved
+				a.mu.Unlock()
+			}
+		}
 	}
 	a.mu.Lock()
 	a.connected = true

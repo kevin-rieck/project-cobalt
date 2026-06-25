@@ -14,6 +14,8 @@ export namespace connections {
 	    createdAt: any;
 	    // Go type: time
 	    updatedAt: any;
+	    // Go type: time
+	    lastConnectedAt?: any;
 	
 	    static createFrom(source: any = {}) {
 	        return new SavedConnection(source);
@@ -32,6 +34,7 @@ export namespace connections {
 	        this.serverCertificateThumbprint = source["serverCertificateThumbprint"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
+	        this.lastConnectedAt = this.convertValues(source["lastConnectedAt"], null);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

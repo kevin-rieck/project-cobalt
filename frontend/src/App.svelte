@@ -118,6 +118,7 @@
     serverCertificateThumbprint?: string
     createdAt: string
     updatedAt: string
+    lastConnectedAt?: string
   }
 
   const objectsRoot: TreeNode = {
@@ -165,7 +166,8 @@
   $: selectedEndpointIsSecure = selectedSecurityMode !== '' && selectedSecurityMode !== 'None'
   $: canUseUsername = selectedEndpointInfo?.UserTokenTypes?.some(token => token.includes('UserName')) ?? false
   $: if (!canUseUsername && authType === 'UserName') authType = 'Anonymous'
-  $: canConnect = !!selectedEndpointInfo && !connecting && (!selectedEndpointIsSecure || (!!clientCertificatePath && !!clientPrivateKeyPath))
+  $: passwordRequired = authType === 'UserName'
+  $: canConnect = !!selectedEndpointInfo && !connecting && (!passwordRequired || !!password) && (!selectedEndpointIsSecure || (!!clientCertificatePath && !!clientPrivateKeyPath))
   $: visibleTree = tree.filter((_, index) => !isHidden(index))
 
   onMount(async () => {
@@ -242,6 +244,7 @@
       })
       connected = true
       currentConnection = endpointText
+      savedConnections = await GetSavedConnections()
       tree = [{ ...objectsRoot }]
       selectedNodeID = ''
       inspection = null
@@ -287,6 +290,13 @@
     }
   }
 
+  function formatSavedConnectionTime(value?: string) {
+    if (!value) return 'Never connected'
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return 'Never connected'
+    return `Last connected ${parsed.toLocaleString()}`
+  }
+
   function useSavedConnection(saved: SavedConnection) {
     connectionName = saved.name
     endpointText = saved.endpoint
@@ -304,6 +314,8 @@
     password = ''
     clientCertificatePath = saved.clientCertificatePath || ''
     clientPrivateKeyPath = saved.clientPrivateKeyPath || ''
+    connectionError = ''
+    addToast('info', 'Saved Connection details populated. Press Connect when ready.')
   }
 
   async function pickClientCertificate() {
@@ -648,6 +660,7 @@
                     </div>
                     <p class="mt-xs truncate font-mono text-sm text-on-surface-variant">{saved.endpoint}</p>
                     <p class="mt-xs truncate text-xs text-on-surface-variant">{saved.securityPolicy || 'None'} / {saved.securityMode || 'None'}{saved.username ? ` • ${saved.username}` : ''}</p>
+                    <p class="mt-xs text-xs text-on-surface-variant">{formatSavedConnectionTime(saved.lastConnectedAt)}</p>
                   </button>
                 {/each}
               </div>
@@ -728,7 +741,9 @@
                   <button class="btn-secondary w-full" on:click={saveCurrentConnection} disabled={!selectedEndpointInfo || savingConnection}>{savingConnection ? 'Saving…' : 'Save Connection'}</button>
                   <button class="btn-primary w-full" on:click={connect} disabled={!canConnect}>{connecting ? 'Connecting…' : 'Connect'}</button>
                 </div>
-                {#if selectedEndpointIsSecure && (!clientCertificatePath || !clientPrivateKeyPath)}
+                {#if passwordRequired && !password}
+                  <p class="text-sm text-tertiary">Enter the password for this Saved Connection before connecting. Passwords are never saved.</p>
+                {:else if selectedEndpointIsSecure && (!clientCertificatePath || !clientPrivateKeyPath)}
                   <p class="text-sm text-tertiary">Provide a client certificate and private key to connect to this secure endpoint.</p>
                 {:else}
                   <p class="text-sm text-on-surface-variant">User certificate authentication and issued tokens are intentionally deferred in this slice.</p>

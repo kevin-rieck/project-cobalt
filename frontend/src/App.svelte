@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { BrowseChildren, ClearVariableNodeInspection, Connect, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, SaveSavedConnection, SearchAddressSpace, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
+  import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, SaveSavedConnection, SearchAddressSpace, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
 
   type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
@@ -107,6 +107,7 @@
   type DiagnosticLogEntry = { timestamp: string; level: string; message: string }
 
   type SavedConnection = {
+    id: string
     name: string
     endpoint: string
     securityPolicy: string
@@ -148,6 +149,8 @@
   let currentConnection = ''
   let savedConnections: SavedConnection[] = []
   let savingConnection = false
+  let deletingSavedConnectionID = ''
+  let editingSavedConnectionID = ''
   let editingSavedConnectionName = ''
   let tree: TreeNode[] = [{ ...objectsRoot }]
   let selectedNodeID = ''
@@ -286,6 +289,7 @@
       })
       savedConnections = await GetSavedConnections()
       connectionName = saved.name
+      editingSavedConnectionID = saved.id
       editingSavedConnectionName = saved.name
       addToast('info', wasEditing ? 'Saved Connection updated' : 'Saved Connection created')
     } catch (error) {
@@ -304,6 +308,7 @@
   }
 
   function useSavedConnection(saved: SavedConnection) {
+    editingSavedConnectionID = saved.id
     editingSavedConnectionName = saved.name
     connectionName = saved.name
     endpointText = saved.endpoint
@@ -326,10 +331,33 @@
   }
 
   function startNewSavedConnection() {
+    editingSavedConnectionID = ''
     editingSavedConnectionName = ''
     connectionName = ''
     connectionError = ''
     addToast('info', 'Ready to create a new Saved Connection')
+  }
+
+  async function deleteSavedConnection(saved: SavedConnection, event: MouseEvent) {
+    event.stopPropagation()
+    if (!window.confirm(`Delete Saved Connection "${saved.name}"? This cannot be undone.`)) return
+    deletingSavedConnectionID = saved.id
+    connectionError = ''
+    try {
+      await DeleteSavedConnection(saved.id)
+      savedConnections = await GetSavedConnections()
+      if (editingSavedConnectionID === saved.id) {
+        editingSavedConnectionID = ''
+        editingSavedConnectionName = ''
+        connectionName = ''
+      }
+      addToast('info', 'Saved Connection deleted')
+    } catch (error) {
+      connectionError = String(error)
+      addToast('error', connectionError)
+    } finally {
+      deletingSavedConnectionID = ''
+    }
   }
 
   async function pickClientCertificate() {
@@ -669,16 +697,19 @@
               <div class="p-lg text-on-surface-variant">No Saved Connections yet. Discover an endpoint, enter non-secret details, and choose Save Connection.</div>
             {:else}
               <div class="divide-y divide-outline-variant">
-                {#each savedConnections as saved (saved.name)}
-                  <button class="block w-full p-md text-left transition-colors hover:bg-surface-container-high" on:click={() => useSavedConnection(saved)}>
+                {#each savedConnections as saved (saved.id)}
+                  <div role="button" tabindex="0" class="block w-full cursor-pointer p-md text-left transition-colors hover:bg-surface-container-high" on:click={() => useSavedConnection(saved)} on:keydown={(event) => event.key === 'Enter' && useSavedConnection(saved)}>
                     <div class="flex items-center justify-between gap-md">
                       <span class="font-semibold text-on-surface">{saved.name}</span>
                       <span class="rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-primary">{saved.authType}</span>
                     </div>
                     <p class="mt-xs truncate font-mono text-sm text-on-surface-variant">{saved.endpoint}</p>
                     <p class="mt-xs truncate text-xs text-on-surface-variant">{saved.securityPolicy || 'None'} / {saved.securityMode || 'None'}{saved.username ? ` • ${saved.username}` : ''}</p>
-                    <p class="mt-xs text-xs text-on-surface-variant">{formatSavedConnectionTime(saved.lastConnectedAt)}</p>
-                  </button>
+                    <div class="mt-xs flex items-center justify-between gap-md text-xs text-on-surface-variant">
+                      <span>{formatSavedConnectionTime(saved.lastConnectedAt)}</span>
+                      <button class="rounded p-xs text-error hover:bg-error-container/20" disabled={deletingSavedConnectionID === saved.id} on:click={(event) => deleteSavedConnection(saved, event)} title="Delete Saved Connection"><span class="material-symbols-outlined text-[18px]">delete</span></button>
+                    </div>
+                  </div>
                 {/each}
               </div>
             {/if}

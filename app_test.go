@@ -133,6 +133,46 @@ func TestSaveSavedConnectionEditsExistingSavedConnection(t *testing.T) {
 	}
 }
 
+func TestDeleteSavedConnectionRemovesOnlyThatSavedConnection(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	store := connections.NewFileStore(path)
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	controlGateway, err := store.Save(connections.SaveRequest{Name: "Control Gateway", Endpoint: "opc.tcp://gateway.local:4840", AuthType: string(opcua.AuthAnonymous)}, now)
+	if err != nil {
+		t.Fatalf("seed first Saved Connection: %v", err)
+	}
+	if _, err := store.Save(connections.SaveRequest{Name: "Packaging Line", Endpoint: "opc.tcp://packaging.local:4840", AuthType: string(opcua.AuthAnonymous)}, now.Add(time.Hour)); err != nil {
+		t.Fatalf("seed second Saved Connection: %v", err)
+	}
+
+	app := NewAppWithSavedConnectionStore(path)
+	app.connected = true
+	app.startup(nil)
+
+	deleted, err := app.DeleteSavedConnection(controlGateway.ID)
+	if err != nil {
+		t.Fatalf("DeleteSavedConnection() error = %v", err)
+	}
+	if !deleted {
+		t.Fatalf("DeleteSavedConnection() deleted = false, want true")
+	}
+
+	if !app.connected {
+		t.Fatalf("DeleteSavedConnection() changed current connection state")
+	}
+	saved := app.GetSavedConnections()
+	if len(saved) != 1 || saved[0].Name != "Packaging Line" {
+		t.Fatalf("GetSavedConnections() after delete = %#v, want only Packaging Line", saved)
+	}
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(reloaded) != 1 || reloaded[0].Name != "Packaging Line" {
+		t.Fatalf("persisted Saved Connections after delete = %#v, want only Packaging Line", reloaded)
+	}
+}
+
 func TestUsernameConnectRequiresPasswordEntry(t *testing.T) {
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
 	client := &recordingClient{}

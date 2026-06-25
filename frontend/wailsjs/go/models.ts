@@ -1,6 +1,7 @@
 export namespace connections {
 	
 	export class SavedConnection {
+	    id: string;
 	    name: string;
 	    endpoint: string;
 	    securityPolicy: string;
@@ -23,6 +24,7 @@ export namespace connections {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.endpoint = source["endpoint"];
 	        this.securityPolicy = source["securityPolicy"];

@@ -12,6 +12,8 @@ export function ClearVariableNodeInspection():Promise<void>;
 
 export function Connect(arg1:main.ConnectionRequest):Promise<void>;
 
+export function DeleteSavedConnection(arg1:string):Promise<boolean>;
+
 export function Disconnect():Promise<void>;
 
 export function DiscoverEndpoints(arg1:string):Promise<Array<opcua.Endpoint>>;

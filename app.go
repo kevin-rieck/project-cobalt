@@ -158,6 +158,27 @@ func (a *App) SaveSavedConnection(request ConnectionRequest) (connections.SavedC
 	return saved, nil
 }
 
+func (a *App) DeleteSavedConnection(id string) (bool, error) {
+	deleted, err := a.savedStore.Delete(id)
+	if err != nil {
+		a.appendLog("error", fmt.Sprintf("Deleting Saved Connection failed: %v", err))
+		return false, err
+	}
+	if !deleted {
+		return false, nil
+	}
+	saved, err := a.savedStore.Load()
+	if err != nil {
+		a.appendLog("error", fmt.Sprintf("Reloading Saved Connections failed: %v", err))
+		return true, err
+	}
+	a.mu.Lock()
+	a.savedConnections = saved
+	a.mu.Unlock()
+	a.appendLog("info", "Deleted Saved Connection")
+	return true, nil
+}
+
 func (a *App) Connect(request ConnectionRequest) error {
 	if request.AuthType == opcua.AuthUsername && strings.TrimSpace(request.Password) == "" {
 		err := fmt.Errorf("username authentication requires password entry at connect time")

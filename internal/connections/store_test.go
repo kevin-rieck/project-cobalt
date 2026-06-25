@@ -191,6 +191,62 @@ func TestStoreAllowsDifferentSavedConnectionNamesForSameEndpoint(t *testing.T) {
 	}
 }
 
+func TestStoreDeletesSavedConnectionByID(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	store := NewFileStore(path)
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	controlGateway, err := store.Save(SaveRequest{Name: "Control Gateway", Endpoint: "opc.tcp://gateway.local:4840"}, now)
+	if err != nil {
+		t.Fatalf("seed first Saved Connection: %v", err)
+	}
+	packagingLine, err := store.Save(SaveRequest{Name: "Packaging Line", Endpoint: "opc.tcp://packaging.local:4840"}, now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("seed second Saved Connection: %v", err)
+	}
+
+	deleted, err := store.Delete(controlGateway.ID)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if !deleted {
+		t.Fatalf("Delete() deleted = false, want true")
+	}
+
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(reloaded) != 1 || reloaded[0].ID != packagingLine.ID || reloaded[0].Name != "Packaging Line" {
+		t.Fatalf("Saved Connections after delete = %#v, want only Packaging Line", reloaded)
+	}
+}
+
+func TestStoreDeletingMissingSavedConnectionIDLeavesStorageUnchanged(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	store := NewFileStore(path)
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	saved, err := store.Save(SaveRequest{Name: "Control Gateway", Endpoint: "opc.tcp://gateway.local:4840"}, now)
+	if err != nil {
+		t.Fatalf("seed Saved Connection: %v", err)
+	}
+
+	deleted, err := store.Delete("missing-id")
+	if err != nil {
+		t.Fatalf("Delete() missing id error = %v", err)
+	}
+	if deleted {
+		t.Fatalf("Delete() missing id deleted = true, want false")
+	}
+
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(reloaded) != 1 || reloaded[0] != saved {
+		t.Fatalf("Saved Connections changed after missing delete: %#v, want %#v", reloaded, saved)
+	}
+}
+
 func TestStoreNeverPersistsPassword(t *testing.T) {
 	path := t.TempDir() + "/saved-connections.json"
 	store := NewFileStore(path)

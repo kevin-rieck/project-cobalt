@@ -14,6 +14,10 @@ export function Connect(arg1) {
   return window['go']['main']['App']['Connect'](arg1);
 }
 
+export function DeleteSavedConnection(arg1) {
+  return window['go']['main']['App']['DeleteSavedConnection'](arg1);
+}
+
 export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }

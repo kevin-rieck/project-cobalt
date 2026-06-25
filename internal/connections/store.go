@@ -13,6 +13,7 @@ import (
 // SavedConnection is the persisted, non-secret information needed to reconnect
 // to an OPC UA Server.
 type SavedConnection struct {
+	ID                          string     `json:"id"`
 	Name                        string     `json:"name"`
 	Endpoint                    string     `json:"endpoint"`
 	SecurityPolicy              string     `json:"securityPolicy"`
@@ -80,6 +81,7 @@ func (s *FileStore) Load() ([]SavedConnection, error) {
 	if saved == nil {
 		return []SavedConnection{}, nil
 	}
+	ensureSavedConnectionIDs(saved)
 	return saved, nil
 }
 
@@ -93,6 +95,7 @@ func (s *FileStore) Save(request SaveRequest, now time.Time) (SavedConnection, e
 		return SavedConnection{}, err
 	}
 	saved := SavedConnection{
+		ID:                          savedConnectionID(request.Name, now),
 		Name:                        request.Name,
 		Endpoint:                    request.Endpoint,
 		SecurityPolicy:              request.SecurityPolicy,
@@ -124,6 +127,7 @@ func (s *FileStore) Save(request SaveRequest, now time.Time) (SavedConnection, e
 	}
 	if targetIndex >= 0 {
 		candidate := existing[targetIndex]
+		saved.ID = candidate.ID
 		saved.CreatedAt = candidate.CreatedAt
 		saved.LastConnectedAt = candidate.LastConnectedAt
 		existing[targetIndex] = saved
@@ -148,7 +152,26 @@ func (s *FileStore) MarkConnected(name string, now time.Time) (SavedConnection, 
 	return SavedConnection{}, false, nil
 }
 
+func (s *FileStore) Delete(id string) (bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false, nil
+	}
+	saved, err := s.Load()
+	if err != nil {
+		return false, err
+	}
+	for i, candidate := range saved {
+		if candidate.ID == id {
+			remaining := append(saved[:i], saved[i+1:]...)
+			return true, s.write(remaining)
+		}
+	}
+	return false, nil
+}
+
 func (s *FileStore) write(saved []SavedConnection) error {
+	ensureSavedConnectionIDs(saved)
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
@@ -158,4 +181,38 @@ func (s *FileStore) write(saved []SavedConnection) error {
 	}
 	contents = append(contents, '\n')
 	return os.WriteFile(s.path, contents, 0o600)
+}
+
+func ensureSavedConnectionIDs(saved []SavedConnection) {
+	used := map[string]bool{}
+	for i := range saved {
+		id := strings.TrimSpace(saved[i].ID)
+		if id == "" {
+			id = savedConnectionID(saved[i].Name, saved[i].CreatedAt)
+		}
+		base := id
+		for suffix := 2; used[id]; suffix++ {
+			id = fmt.Sprintf("%s-%d", base, suffix)
+		}
+		saved[i].ID = id
+		used[id] = true
+	}
+}
+
+func savedConnectionID(name string, createdAt time.Time) string {
+	var slug strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			slug.WriteRune(r)
+		case r == '-' || r == '_':
+			slug.WriteRune(r)
+		case r == ' ' && slug.Len() > 0:
+			slug.WriteRune('-')
+		}
+	}
+	if slug.Len() == 0 {
+		slug.WriteString("saved-connection")
+	}
+	return fmt.Sprintf("%s-%d", slug.String(), createdAt.UTC().UnixNano())
 }

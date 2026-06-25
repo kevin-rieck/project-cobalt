@@ -237,6 +237,7 @@
     try {
       await Connect({
         existingName: '',
+        savedConnectionID: editingSavedConnectionID,
         name: connectionName,
         endpoint: endpointText,
         securityPolicy: selectedEndpointInfo.SecurityPolicy,
@@ -276,6 +277,7 @@
       const wasEditing = editingSavedConnectionName !== ''
       const saved = await SaveSavedConnection({
         existingName: editingSavedConnectionName,
+        savedConnectionID: editingSavedConnectionID,
         name: connectionName,
         endpoint: endpointText,
         securityPolicy: selectedEndpointInfo.SecurityPolicy,
@@ -795,7 +797,7 @@
                 {:else if selectedEndpointIsSecure && (!clientCertificatePath || !clientPrivateKeyPath)}
                   <p class="text-sm text-tertiary">Provide a client certificate and private key to connect to this secure endpoint.</p>
                 {:else}
-                  <p class="text-sm text-on-surface-variant">User certificate authentication and issued tokens are intentionally deferred in this slice.</p>
+                  <p class="text-sm text-on-surface-variant">Client Certificate authentication and issued tokens are intentionally deferred in this slice.</p>
                 {/if}
               </div>
             </div>

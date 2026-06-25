@@ -137,13 +137,20 @@ func (s *FileStore) Save(request SaveRequest, now time.Time) (SavedConnection, e
 	return saved, s.write(existing)
 }
 
-func (s *FileStore) MarkConnected(name string, now time.Time) (SavedConnection, bool, error) {
+func (s *FileStore) MarkConnected(id, name string, now time.Time) (SavedConnection, bool, error) {
 	saved, err := s.Load()
 	if err != nil {
 		return SavedConnection{}, false, err
 	}
 	for i := range saved {
-		if saved[i].Name == name {
+		if id != "" && saved[i].ID == id {
+			saved[i].LastConnectedAt = &now
+			saved[i].UpdatedAt = now
+			return saved[i], true, s.write(saved)
+		}
+	}
+	for i := range saved {
+		if id == "" && saved[i].Name == name {
 			saved[i].LastConnectedAt = &now
 			saved[i].UpdatedAt = now
 			return saved[i], true, s.write(saved)

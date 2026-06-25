@@ -64,6 +64,7 @@ export namespace main {
 	
 	export class ConnectionRequest {
 	    existingName: string;
+	    savedConnectionID: string;
 	    name: string;
 	    endpoint: string;
 	    securityPolicy: string;
@@ -82,6 +83,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.existingName = source["existingName"];
+	        this.savedConnectionID = source["savedConnectionID"];
 	        this.name = source["name"];
 	        this.endpoint = source["endpoint"];
 	        this.securityPolicy = source["securityPolicy"];

@@ -223,6 +223,36 @@ func TestUsernameConnectRequiresPasswordEntry(t *testing.T) {
 	}
 }
 
+func TestConnectWithRenamedUnsavedSavedConnectionUpdatesSelectedSavedConnection(t *testing.T) {
+	path := t.TempDir() + "/saved-connections.json"
+	store := connections.NewFileStore(path)
+	createdAt := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	savedConnection, err := store.Save(connections.SaveRequest{Name: "Control Gateway", Endpoint: "opc.tcp://gateway.local:4840", AuthType: string(opcua.AuthAnonymous)}, createdAt)
+	if err != nil {
+		t.Fatalf("seed Saved Connection: %v", err)
+	}
+
+	client := &recordingClient{}
+	app := NewAppWithSavedConnectionStore(path)
+	app.client = client
+	app.startup(nil)
+
+	if err := app.Connect(ConnectionRequest{SavedConnectionID: savedConnection.ID, Name: "Unsaved Rename", Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+
+	saved := app.GetSavedConnections()
+	if len(saved) != 1 {
+		t.Fatalf("GetSavedConnections() returned %d Saved Connections, want 1", len(saved))
+	}
+	if saved[0].ID != savedConnection.ID || saved[0].Name != "Control Gateway" {
+		t.Fatalf("updated Saved Connection = %#v, want original selected record", saved[0])
+	}
+	if saved[0].LastConnectedAt == nil {
+		t.Fatalf("LastConnectedAt is nil after successful connect from selected Saved Connection")
+	}
+}
+
 func TestFailedConnectWithSavedConnectionDoesNotUpdateLastConnectedTime(t *testing.T) {
 	path := t.TempDir() + "/saved-connections.json"
 	store := connections.NewFileStore(path)

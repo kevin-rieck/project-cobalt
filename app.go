@@ -67,6 +67,7 @@ type DiagnosticLogEntry struct {
 
 type ConnectionRequest struct {
 	ExistingName          string         `json:"existingName"`
+	SavedConnectionID     string         `json:"savedConnectionID"`
 	Name                  string         `json:"name"`
 	Endpoint              string         `json:"endpoint"`
 	SecurityPolicy        string         `json:"securityPolicy"`
@@ -203,8 +204,8 @@ func (a *App) Connect(request ConnectionRequest) error {
 		a.appendLog("error", fmt.Sprintf("Connection failed: %v", err))
 		return err
 	}
-	if request.Name != "" {
-		if _, ok, err := a.savedStore.MarkConnected(request.Name, time.Now()); err != nil {
+	if request.SavedConnectionID != "" || request.Name != "" {
+		if _, ok, err := a.savedStore.MarkConnected(request.SavedConnectionID, request.Name, time.Now()); err != nil {
 			a.appendLog("error", fmt.Sprintf("Updating Saved Connection last connected time failed: %v", err))
 		} else if ok {
 			if saved, err := a.savedStore.Load(); err != nil {

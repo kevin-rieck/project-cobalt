@@ -116,8 +116,15 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
     inspection: 'address-space',
     watchlist: 'watchlist',
     trend: 'session-trend',
-    connections: 'connections'
+    connections: 'connections',
+    'connections-empty': 'connections'
   }
+
+  const savedConnections = requested === 'connections-empty'
+    ? []
+    : [
+      { id: 'control-gateway', name: 'Control Gateway', endpoint: 'opc.tcp://192.168.10.42:4840', securityPolicy: 'Basic256Sha256', securityMode: 'SignAndEncrypt', authType: 'Anonymous', serverCertificateThumbprint: '8A:91:4F:2C:67:12:EB:44', createdAt: now, updatedAt: now, lastConnectedAt: now }
+    ]
 
   return {
     activeTab: tabByRequest[requested] || 'address-space',
@@ -131,9 +138,7 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
     focusedTrendNodeID: nodes.temp.NodeID,
     searchQuery: requested === 'connections' ? '' : 'filler',
     searchView: { query: 'filler', results: searchResults, status: '3 Search Results found in browsed Address Space metadata.' },
-    savedConnections: [
-      { id: 'control-gateway', name: 'Control Gateway', endpoint: 'opc.tcp://192.168.10.42:4840', securityPolicy: 'Basic256Sha256', securityMode: 'SignAndEncrypt', authType: 'Anonymous', createdAt: now, updatedAt: now, lastConnectedAt: now }
-    ],
+    savedConnections,
     endpoints: [
       { URL: 'opc.tcp://192.168.10.42:4840', SecurityPolicy: 'Basic256Sha256', SecurityMode: 'SignAndEncrypt', SecurityLevel: 3, UserTokenTypes: ['Anonymous', 'UserName'], ServerThumbprint: '8A:91:4F:2C:67:12:EB:44' },
       { URL: 'opc.tcp://192.168.10.42:4840', SecurityPolicy: 'None', SecurityMode: 'None', SecurityLevel: 0, UserTokenTypes: ['Anonymous'], ServerThumbprint: '' }

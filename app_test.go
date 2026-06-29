@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,8 +14,12 @@ import (
 )
 
 type recordingClient struct {
+	mu              sync.Mutex
 	connectErr      error
 	connectRequests []opcua.ConnectRequest
+	browseChildren  map[string][]opcua.AddressNode
+	browseRequests  []string
+	browseTimes     []time.Time
 }
 
 func (c *recordingClient) DiscoverEndpoints(context.Context, string) ([]opcua.Endpoint, error) {
@@ -22,12 +27,37 @@ func (c *recordingClient) DiscoverEndpoints(context.Context, string) ([]opcua.En
 }
 
 func (c *recordingClient) Connect(_ context.Context, request opcua.ConnectRequest) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.connectRequests = append(c.connectRequests, request)
 	return c.connectErr
 }
 
-func (c *recordingClient) BrowseChildren(context.Context, string) ([]opcua.AddressNode, error) {
-	return nil, nil
+func (c *recordingClient) BrowseChildren(_ context.Context, nodeID string) ([]opcua.AddressNode, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.browseRequests = append(c.browseRequests, nodeID)
+	c.browseTimes = append(c.browseTimes, time.Now())
+	if c.browseChildren == nil {
+		return nil, nil
+	}
+	return c.browseChildren[nodeID], nil
+}
+
+func (c *recordingClient) recordedBrowseRequests() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	requests := make([]string, len(c.browseRequests))
+	copy(requests, c.browseRequests)
+	return requests
+}
+
+func (c *recordingClient) recordedBrowseTimes() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	times := make([]time.Time, len(c.browseTimes))
+	copy(times, c.browseTimes)
+	return times
 }
 
 func (c *recordingClient) ReadNodeDetails(context.Context, string) (opcua.NodeDetails, error) {
@@ -39,6 +69,22 @@ func (c *recordingClient) SubscribeValue(context.Context, string) (<-chan opcua.
 }
 
 func (c *recordingClient) Close(context.Context) error { return nil }
+
+type blockingBrowseClient struct {
+	recordingClient
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingBrowseClient) BrowseChildren(context.Context, string) ([]opcua.AddressNode, error) {
+	select {
+	case <-c.started:
+	default:
+		close(c.started)
+	}
+	<-c.release
+	return []opcua.AddressNode{{NodeID: "ns=2;s=StalePump", DisplayName: "Stale Pump", BrowseName: "2:StalePump", NodeClass: "Variable"}}, nil
+}
 
 func TestAppLoadsSavedConnectionsOnStartup(t *testing.T) {
 	path := t.TempDir() + "/saved-connections.json"
@@ -96,6 +142,242 @@ func TestStartupWithCorruptSavedConnectionStorageLogsDiagnosticAndManualConnectS
 	}
 	if string(contents) != string(corruptStorage) {
 		t.Fatalf("corrupt storage was changed to %q, want original %q", contents, corruptStorage)
+	}
+}
+
+func TestConnectStartsShallowAddressSpaceIndexingFromObjectsNode(t *testing.T) {
+	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"i=85": {{NodeID: "ns=2;s=PumpA", DisplayName: "Pump A", BrowseName: "2:PumpA", NodeClass: "Variable"}},
+	}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		view, err := app.SearchAddressSpace("Pump")
+		if err != nil {
+			t.Fatalf("SearchAddressSpace() error = %v", err)
+		}
+		if len(view.Results) == 1 && view.Results[0].Node.NodeID == "ns=2;s=PumpA" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	view, _ := app.SearchAddressSpace("Pump")
+	t.Fatalf("SearchAddressSpace(\"Pump\") = %#v, want shallow-indexed Variable Node", view)
+}
+
+func TestShallowAddressSpaceIndexingAddsSearchableNodeClassesButOnlyRecursesThroughParentNodes(t *testing.T) {
+	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"i=85": {
+			{NodeID: "ns=2;s=Area1", DisplayName: "Area 1", BrowseName: "2:Area1", NodeClass: "Object"},
+			{NodeID: "ns=2;s=Temperature", DisplayName: "Filler Temperature", BrowseName: "2:FillerTemperature", NodeClass: "Variable"},
+			{NodeID: "ns=2;s=Reset", DisplayName: "Reset", BrowseName: "2:Reset", NodeClass: "Method"},
+			{NodeID: "", DisplayName: "Nameless", BrowseName: "2:Nameless", NodeClass: "Object"},
+		},
+		"ns=2;s=Area1":       {{NodeID: "ns=2;s=Pressure", DisplayName: "Bowl Pressure", BrowseName: "2:BowlPressure", NodeClass: "Variable"}},
+		"ns=2;s=Temperature": {{NodeID: "ns=2;s=ShouldNotBrowse", DisplayName: "Should Not Browse", BrowseName: "2:ShouldNotBrowse", NodeClass: "Variable"}},
+	}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		view, err := app.SearchAddressSpace("Pressure")
+		if err != nil {
+			t.Fatalf("SearchAddressSpace() error = %v", err)
+		}
+		if len(view.Results) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for _, query := range []string{"Area", "Temperature", "Reset", "Pressure"} {
+		view, err := app.SearchAddressSpace(query)
+		if err != nil {
+			t.Fatalf("SearchAddressSpace(%q) error = %v", query, err)
+		}
+		if len(view.Results) != 1 {
+			t.Fatalf("SearchAddressSpace(%q) = %#v, want one indexed Search Result", query, view)
+		}
+	}
+	view, err := app.SearchAddressSpace("Nameless")
+	if err != nil {
+		t.Fatalf("SearchAddressSpace() error = %v", err)
+	}
+	if len(view.Results) != 0 {
+		t.Fatalf("SearchAddressSpace(\"Nameless\") = %#v, want nodes without valid NodeIDs excluded", view)
+	}
+	for _, request := range client.recordedBrowseRequests() {
+		if request == "ns=2;s=Temperature" {
+			t.Fatalf("Shallow Address Space Indexing browsed through Variable Node; requests = %#v", client.recordedBrowseRequests())
+		}
+	}
+}
+
+func TestExplicitBrowsePrioritizesDiscoveredParentNodesAheadOfBackgroundIndexing(t *testing.T) {
+	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"i=85":                  {{NodeID: "ns=2;s=BackgroundArea", DisplayName: "Background Area", BrowseName: "2:BackgroundArea", NodeClass: "Object"}},
+		"ns=2;s=ManualArea":     {{NodeID: "ns=2;s=ManualSkid", DisplayName: "Manual Skid", BrowseName: "2:ManualSkid", NodeClass: "Object"}},
+		"ns=2;s=ManualSkid":     {{NodeID: "ns=2;s=ManualPressure", DisplayName: "Manual Pressure", BrowseName: "2:ManualPressure", NodeClass: "Variable"}},
+		"ns=2;s=BackgroundArea": {{NodeID: "ns=2;s=BackgroundPressure", DisplayName: "Background Pressure", BrowseName: "2:BackgroundPressure", NodeClass: "Variable"}},
+	}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.shallowIndexBrowseInterval = 50 * time.Millisecond
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if requests := client.recordedBrowseRequests(); len(requests) >= 1 && requests[0] == "i=85" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if _, err := app.BrowseChildren("ns=2;s=ManualArea"); err != nil {
+		t.Fatalf("BrowseChildren() error = %v", err)
+	}
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		requests := client.recordedBrowseRequests()
+		for i, request := range requests {
+			if request == "ns=2;s=ManualArea" && i+1 < len(requests) {
+				if requests[i+1] != "ns=2;s=ManualSkid" {
+					t.Fatalf("request after explicit BrowseChildren = %q, want prioritized ManualSkid; requests = %#v", requests[i+1], requests)
+				}
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("browse requests = %#v, want ManualSkid indexed after explicit BrowseChildren", client.recordedBrowseRequests())
+}
+
+func TestExplicitBrowseAddsDiscoveredChildrenToSearchImmediately(t *testing.T) {
+	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"ns=2;s=ManualArea": {{NodeID: "ns=2;s=ManualTemperature", DisplayName: "Manual Temperature", BrowseName: "2:ManualTemperature", NodeClass: "Variable"}},
+	}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.shallowIndexBrowseInterval = time.Hour
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	if _, err := app.BrowseChildren("ns=2;s=ManualArea"); err != nil {
+		t.Fatalf("BrowseChildren() error = %v", err)
+	}
+	view, err := app.SearchAddressSpace("Manual Temperature")
+	if err != nil {
+		t.Fatalf("SearchAddressSpace() error = %v", err)
+	}
+	if len(view.Results) != 1 || view.Results[0].Node.NodeID != "ns=2;s=ManualTemperature" {
+		t.Fatalf("SearchAddressSpace() = %#v, want explicitly browsed child immediately searchable", view)
+	}
+}
+
+func TestShallowAddressSpaceIndexingLimitsBrowseRequestsToDefaultRate(t *testing.T) {
+	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"i=85":         {{NodeID: "ns=2;s=Area1", DisplayName: "Area 1", BrowseName: "2:Area1", NodeClass: "Object"}},
+		"ns=2;s=Area1": nil,
+	}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) && len(client.recordedBrowseTimes()) < 2 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	times := client.recordedBrowseTimes()
+	if len(times) < 2 {
+		t.Fatalf("recorded browse times = %#v, want two browse requests", times)
+	}
+	if elapsed := times[1].Sub(times[0]); elapsed < 950*time.Millisecond {
+		t.Fatalf("second Browse request started after %s, want about one per second", elapsed)
+	}
+}
+
+func TestDisconnectClearsSessionLocalShallowIndexedSearchMetadata(t *testing.T) {
+	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"i=85": {{NodeID: "ns=2;s=PumpA", DisplayName: "Pump A", BrowseName: "2:PumpA", NodeClass: "Variable"}},
+	}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		view, _ := app.SearchAddressSpace("Pump")
+		if len(view.Results) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := app.Disconnect(); err != nil {
+		t.Fatalf("Disconnect() error = %v", err)
+	}
+	view, err := app.SearchAddressSpace("Pump")
+	if err != nil {
+		t.Fatalf("SearchAddressSpace() error = %v", err)
+	}
+	if len(view.Results) != 0 || !strings.Contains(view.Status, "Connect to an OPC UA Server") {
+		t.Fatalf("SearchAddressSpace() after Disconnect = %#v, want cleared disconnected search metadata", view)
+	}
+}
+
+func TestReconnectCancelsPreviousShallowAddressSpaceIndexerAndClearsItsSearchMetadata(t *testing.T) {
+	firstClient := &blockingBrowseClient{started: make(chan struct{}), release: make(chan struct{})}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = firstClient
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://first.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("first Connect() error = %v", err)
+	}
+	<-firstClient.started
+
+	secondClient := &recordingClient{}
+	app.client = secondClient
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://second.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("second Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+	close(firstClient.release)
+	time.Sleep(20 * time.Millisecond)
+
+	view, err := app.SearchAddressSpace("StalePump")
+	if err != nil {
+		t.Fatalf("SearchAddressSpace() error = %v", err)
+	}
+	if len(view.Results) != 0 {
+		t.Fatalf("SearchAddressSpace() after reconnect = %#v, want previous indexer cancelled and metadata cleared", view)
 	}
 }
 

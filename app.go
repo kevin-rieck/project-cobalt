@@ -16,25 +16,29 @@ import (
 )
 
 const (
-	eventVariableInspectionUpdated = "variable-inspection-updated"
-	eventWatchlistUpdated          = "watchlist-updated"
-	eventSessionTrendUpdated       = "session-trend-updated"
-	eventDiagnosticLogAppended     = "diagnostic-log-appended"
+	eventVariableInspectionUpdated    = "variable-inspection-updated"
+	eventWatchlistUpdated             = "watchlist-updated"
+	eventSessionTrendUpdated          = "session-trend-updated"
+	eventDiagnosticLogAppended        = "diagnostic-log-appended"
+	defaultShallowIndexBrowseInterval = time.Second
 )
 
 // App is the Wails backend boundary for OPC UA Studio.
 type App struct {
 	ctx context.Context
 
-	mu                 sync.Mutex
-	client             opcua.Client
-	inspections        *session.InspectionSet
-	addressSpaceSearch *search.Service
-	logs               []DiagnosticLogEntry
-	savedConnections   []connections.SavedConnection
-	savedStore         *connections.FileStore
-	connected          bool
-	trendNotifyPending bool
+	mu                         sync.Mutex
+	client                     opcua.Client
+	inspections                *session.InspectionSet
+	addressSpaceSearch         *search.Service
+	logs                       []DiagnosticLogEntry
+	savedConnections           []connections.SavedConnection
+	savedStore                 *connections.FileStore
+	connected                  bool
+	trendNotifyPending         bool
+	shallowIndexCancel         context.CancelFunc
+	shallowIndexPrioritize     chan []opcua.AddressNode
+	shallowIndexBrowseInterval time.Duration
 }
 
 // NewApp creates a new App application struct.
@@ -43,7 +47,7 @@ func NewApp() *App {
 }
 
 func NewAppWithSavedConnectionStore(path string) *App {
-	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}}
+	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, shallowIndexBrowseInterval: defaultShallowIndexBrowseInterval}
 }
 
 // startup is called when the app starts. The context is saved so we can emit runtime events.
@@ -218,10 +222,12 @@ func (a *App) Connect(request ConnectionRequest) error {
 		}
 	}
 	a.mu.Lock()
+	a.cancelShallowAddressSpaceIndexingLocked()
 	a.connected = true
 	a.inspections = session.NewInspectionSet()
 	a.addressSpaceSearch.Reset()
 	a.addressSpaceSearch.AddNodes([]opcua.AddressNode{objectsRootNode()})
+	a.startShallowAddressSpaceIndexingLocked()
 	a.mu.Unlock()
 	a.emitInspection(nil)
 	a.emitWatchlist()
@@ -257,6 +263,7 @@ func (a *App) Disconnect() error {
 		return err
 	}
 	a.mu.Lock()
+	a.cancelShallowAddressSpaceIndexingLocked()
 	a.client = opcua.NewClient()
 	a.inspections = session.NewInspectionSet()
 	a.addressSpaceSearch.Reset()
@@ -267,6 +274,125 @@ func (a *App) Disconnect() error {
 	a.emitSessionTrendUpdated()
 	a.appendLog("info", "Disconnected")
 	return nil
+}
+
+func (a *App) startShallowAddressSpaceIndexingLocked() {
+	base := a.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
+	prioritize := make(chan []opcua.AddressNode, 128)
+	a.shallowIndexCancel = cancel
+	a.shallowIndexPrioritize = prioritize
+	client := a.client
+	interval := a.shallowIndexBrowseInterval
+	if interval <= 0 {
+		interval = defaultShallowIndexBrowseInterval
+	}
+	go a.runShallowAddressSpaceIndexing(ctx, client, interval, prioritize)
+}
+
+func (a *App) cancelShallowAddressSpaceIndexingLocked() {
+	if a.shallowIndexCancel != nil {
+		a.shallowIndexCancel()
+		a.shallowIndexCancel = nil
+		a.shallowIndexPrioritize = nil
+	}
+}
+
+func (a *App) runShallowAddressSpaceIndexing(ctx context.Context, client opcua.Client, interval time.Duration, prioritize <-chan []opcua.AddressNode) {
+	priorityQueue := []string{}
+	backgroundQueue := []string{objectsRootNode().NodeID}
+	seen := map[string]bool{objectsRootNode().NodeID: true}
+	firstBrowse := true
+
+	for {
+		drainShallowIndexPriorityRequests(prioritize, &priorityQueue, seen)
+		if len(priorityQueue) == 0 && len(backgroundQueue) == 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case nodes := <-prioritize:
+				enqueueShallowIndexParentNodes(nodes, &priorityQueue, seen)
+				continue
+			}
+		}
+
+		if !firstBrowse {
+			timer := time.NewTimer(interval)
+			waiting := true
+			for waiting {
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case nodes := <-prioritize:
+					enqueueShallowIndexParentNodes(nodes, &priorityQueue, seen)
+				case <-timer.C:
+					waiting = false
+				}
+			}
+		}
+		firstBrowse = false
+
+		fromPriority := len(priorityQueue) > 0
+		nodeID := ""
+		if fromPriority {
+			nodeID = priorityQueue[0]
+			priorityQueue = priorityQueue[1:]
+		} else {
+			nodeID = backgroundQueue[0]
+			backgroundQueue = backgroundQueue[1:]
+		}
+		children, err := client.BrowseChildren(ctx, nodeID)
+		if err != nil {
+			if ctx.Err() == nil {
+				a.appendLog("error", fmt.Sprintf("Shallow Address Space Indexing browse failed for %s: %v", nodeID, err))
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		a.addressSpaceSearch.AddNodes(children)
+		if fromPriority {
+			enqueueShallowIndexParentNodes(children, &priorityQueue, seen)
+		} else {
+			enqueueShallowIndexParentNodes(children, &backgroundQueue, seen)
+		}
+	}
+}
+
+func drainShallowIndexPriorityRequests(prioritize <-chan []opcua.AddressNode, priorityQueue *[]string, seen map[string]bool) {
+	for {
+		select {
+		case nodes := <-prioritize:
+			enqueueShallowIndexParentNodes(nodes, priorityQueue, seen)
+		default:
+			return
+		}
+	}
+}
+
+func enqueueShallowIndexParentNodes(nodes []opcua.AddressNode, queue *[]string, seen map[string]bool) {
+	for _, node := range nodes {
+		nodeID := strings.TrimSpace(node.NodeID)
+		if nodeID == "" || seen[nodeID] || !isShallowIndexParentNode(node) {
+			continue
+		}
+		seen[nodeID] = true
+		*queue = append(*queue, nodeID)
+	}
+}
+
+func isShallowIndexParentNode(node opcua.AddressNode) bool {
+	switch node.NodeClass {
+	case "Object", "View":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *App) BrowseChildren(nodeID string) ([]opcua.AddressNode, error) {
@@ -280,8 +406,23 @@ func (a *App) BrowseChildren(nodeID string) ([]opcua.AddressNode, error) {
 		return nil, err
 	}
 	a.addressSpaceSearch.AddNodes(children)
+	a.prioritizeShallowAddressSpaceIndexing(children)
 	a.appendLog("info", fmt.Sprintf("Browsed %d children of %s", len(children), nodeID))
 	return children, nil
+}
+
+func (a *App) prioritizeShallowAddressSpaceIndexing(nodes []opcua.AddressNode) {
+	a.mu.Lock()
+	prioritize := a.shallowIndexPrioritize
+	a.mu.Unlock()
+	if prioritize == nil {
+		return
+	}
+	select {
+	case prioritize <- nodes:
+	default:
+		a.appendLog("error", "Shallow Address Space Indexing priority queue is full")
+	}
 }
 
 func (a *App) SearchAddressSpace(query string) (search.AddressSpaceSearchView, error) {

@@ -48,6 +48,10 @@ _Avoid_: Asset search, tag search, global search
 Browsing or indexing the Address Space at a bounded request rate to reduce load on an OPC UA Server.
 _Avoid_: Gentle browsing, crawl, aggressive indexing
 
+**Shallow Address Space Indexing**:
+Bounded discovery of nearby Address Space metadata that expands Address Space Search without promising exhaustive coverage of an OPC UA Server.
+_Avoid_: Full crawl, deep indexing, complete server scan
+
 **Object Node**:
 A node in the Address Space that represents an entity, grouping, or component and may organize related Variable Nodes.
 _Avoid_: Asset, device card, folder

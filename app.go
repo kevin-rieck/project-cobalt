@@ -28,19 +28,20 @@ const (
 type App struct {
 	ctx context.Context
 
-	mu                         sync.Mutex
-	client                     opcua.Client
-	inspections                *session.InspectionSet
-	addressSpaceSearch         *search.Service
-	logs                       []DiagnosticLogEntry
-	savedConnections           []connections.SavedConnection
-	savedStore                 *connections.FileStore
-	connected                  bool
-	trendNotifyPending         bool
-	shallowIndexCancel         context.CancelFunc
-	shallowIndexPrioritize     chan []opcua.AddressNode
-	shallowIndexBrowseInterval time.Duration
-	shallowIndexBrowseBudget   int
+	mu                          sync.Mutex
+	client                      opcua.Client
+	inspections                 *session.InspectionSet
+	addressSpaceSearch          *search.Service
+	logs                        []DiagnosticLogEntry
+	savedConnections            []connections.SavedConnection
+	savedStore                  *connections.FileStore
+	connected                   bool
+	trendNotifyPending          bool
+	shallowIndexCancel          context.CancelFunc
+	shallowIndexPrioritize      chan []opcua.AddressNode
+	shallowIndexBrowseInterval  time.Duration
+	shallowIndexBrowseBudget    int
+	shallowIndexBudgetExhausted bool
 }
 
 // NewApp creates a new App application struct.
@@ -228,6 +229,7 @@ func (a *App) Connect(request ConnectionRequest) error {
 	a.connected = true
 	a.inspections = session.NewInspectionSet()
 	a.addressSpaceSearch.Reset()
+	a.shallowIndexBudgetExhausted = false
 	a.addressSpaceSearch.AddNodes([]opcua.AddressNode{objectsRootNode()})
 	a.startShallowAddressSpaceIndexingLocked()
 	a.mu.Unlock()
@@ -269,6 +271,7 @@ func (a *App) Disconnect() error {
 	a.client = opcua.NewClient()
 	a.inspections = session.NewInspectionSet()
 	a.addressSpaceSearch.Reset()
+	a.shallowIndexBudgetExhausted = false
 	a.connected = false
 	a.mu.Unlock()
 	a.emitInspection(nil)
@@ -308,7 +311,8 @@ func (a *App) cancelShallowAddressSpaceIndexingLocked() {
 }
 
 func (a *App) runShallowAddressSpaceIndexing(ctx context.Context, client opcua.Client, interval time.Duration, browseBudget int, prioritize chan []opcua.AddressNode) {
-	defer a.finishShallowAddressSpaceIndexing(prioritize)
+	budgetExhausted := false
+	defer func() { a.finishShallowAddressSpaceIndexing(prioritize, budgetExhausted) }()
 	priorityQueue := []string{}
 	backgroundQueue := []string{objectsRootNode().NodeID}
 	seen := map[string]bool{objectsRootNode().NodeID: true}
@@ -354,6 +358,7 @@ func (a *App) runShallowAddressSpaceIndexing(ctx context.Context, client opcua.C
 			backgroundQueue = backgroundQueue[1:]
 		}
 		if browseCount >= browseBudget {
+			budgetExhausted = true
 			return
 		}
 		browseCount++
@@ -374,17 +379,19 @@ func (a *App) runShallowAddressSpaceIndexing(ctx context.Context, client opcua.C
 			enqueueShallowIndexParentNodes(children, &backgroundQueue, seen)
 		}
 		if browseCount >= browseBudget {
+			budgetExhausted = len(priorityQueue) > 0 || len(backgroundQueue) > 0
 			return
 		}
 	}
 }
 
-func (a *App) finishShallowAddressSpaceIndexing(prioritize chan []opcua.AddressNode) {
+func (a *App) finishShallowAddressSpaceIndexing(prioritize chan []opcua.AddressNode, budgetExhausted bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.shallowIndexPrioritize == prioritize {
 		a.shallowIndexCancel = nil
 		a.shallowIndexPrioritize = nil
+		a.shallowIndexBudgetExhausted = budgetExhausted
 	}
 }
 
@@ -452,11 +459,24 @@ func (a *App) prioritizeShallowAddressSpaceIndexing(nodes []opcua.AddressNode) {
 func (a *App) SearchAddressSpace(query string) (search.AddressSpaceSearchView, error) {
 	a.mu.Lock()
 	connected := a.connected
+	indexingActive := a.shallowIndexPrioritize != nil
+	indexingBudgetExhausted := a.shallowIndexBudgetExhausted
 	a.mu.Unlock()
 	if !connected {
 		return search.AddressSpaceSearchView{Query: query, Results: []search.AddressSpaceSearchResult{}, Status: "Connect to an OPC UA Server to search browsed Address Space metadata."}, nil
 	}
-	return a.addressSpaceSearch.Search(query), nil
+	view := a.addressSpaceSearch.Search(query)
+	view.Status = describeHybridAddressSpaceSearchStatus(view.Status)
+	if indexingActive {
+		view.Status = view.Status + " Shallow Address Space Indexing is active; indexed coverage is still expanding."
+	} else if indexingBudgetExhausted {
+		view.Status = view.Status + " Shallow Address Space Indexing reached its session budget; some Address Space areas may not be indexed."
+	}
+	return view, nil
+}
+
+func describeHybridAddressSpaceSearchStatus(status string) string {
+	return strings.ReplaceAll(status, "browsed Address Space metadata", "browsed and shallow-indexed Address Space metadata")
 }
 
 func (a *App) InspectVariableNode(node opcua.AddressNode) error {

@@ -296,6 +296,88 @@ func TestExplicitBrowseAddsDiscoveredChildrenToSearchImmediately(t *testing.T) {
 	}
 }
 
+func TestAddressSpaceSearchStatusMentionsBrowsedAndShallowIndexedMetadata(t *testing.T) {
+	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"i=85": {{NodeID: "ns=2;s=PumpA", DisplayName: "Pump A", BrowseName: "2:PumpA", NodeClass: "Variable"}},
+	}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		view, err := app.SearchAddressSpace("Pump")
+		if err != nil {
+			t.Fatalf("SearchAddressSpace() error = %v", err)
+		}
+		if len(view.Results) == 1 {
+			if !strings.Contains(view.Status, "browsed and shallow-indexed Address Space metadata") {
+				t.Fatalf("SearchAddressSpace() status = %q, want browsed and shallow-indexed metadata message", view.Status)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	view, _ := app.SearchAddressSpace("Pump")
+	t.Fatalf("SearchAddressSpace() = %#v, want shallow-indexed result", view)
+}
+
+func TestAddressSpaceSearchStatusShowsIndexedCoverageIsExpanding(t *testing.T) {
+	client := &blockingBrowseClient{started: make(chan struct{}), release: make(chan struct{})}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	<-client.started
+	defer func() {
+		close(client.release)
+		_ = app.Disconnect()
+	}()
+
+	view, err := app.SearchAddressSpace("Pump")
+	if err != nil {
+		t.Fatalf("SearchAddressSpace() error = %v", err)
+	}
+	if !strings.Contains(view.Status, "indexed coverage is still expanding") {
+		t.Fatalf("SearchAddressSpace() status = %q, want indexed coverage expanding message", view.Status)
+	}
+}
+
+func TestAddressSpaceSearchStatusShowsIndexingBudgetExhausted(t *testing.T) {
+	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"i=85": {{NodeID: "ns=2;s=Area1", DisplayName: "Area 1", BrowseName: "2:Area1", NodeClass: "Object"}},
+	}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	app.shallowIndexBrowseBudget = 1
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		view, err := app.SearchAddressSpace("Missing")
+		if err != nil {
+			t.Fatalf("SearchAddressSpace() error = %v", err)
+		}
+		if strings.Contains(view.Status, "some Address Space areas may not be indexed") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	view, _ := app.SearchAddressSpace("Missing")
+	t.Fatalf("SearchAddressSpace() status = %q, want indexing budget exhausted message", view.Status)
+}
+
 func TestShallowAddressSpaceIndexingStopsAtSessionBudget(t *testing.T) {
 	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
 		"i=85":         {{NodeID: "ns=2;s=Area1", DisplayName: "Area 1", BrowseName: "2:Area1", NodeClass: "Object"}},

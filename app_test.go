@@ -18,6 +18,7 @@ type recordingClient struct {
 	connectErr      error
 	connectRequests []opcua.ConnectRequest
 	browseChildren  map[string][]opcua.AddressNode
+	browseErrors    map[string]error
 	browseRequests  []string
 	browseTimes     []time.Time
 }
@@ -38,6 +39,9 @@ func (c *recordingClient) BrowseChildren(_ context.Context, nodeID string) ([]op
 	defer c.mu.Unlock()
 	c.browseRequests = append(c.browseRequests, nodeID)
 	c.browseTimes = append(c.browseTimes, time.Now())
+	if err := c.browseErrors[nodeID]; err != nil {
+		return nil, err
+	}
 	if c.browseChildren == nil {
 		return nil, nil
 	}
@@ -271,6 +275,28 @@ func TestExplicitBrowsePrioritizesDiscoveredParentNodesAheadOfBackgroundIndexing
 	t.Fatalf("browse requests = %#v, want ManualSkid indexed after explicit BrowseChildren", client.recordedBrowseRequests())
 }
 
+func TestExplicitBrowseFailureReturnsErrorAndRecordsDiagnostic(t *testing.T) {
+	client := &recordingClient{browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	_, err := app.BrowseChildren("ns=2;s=BadArea")
+	if err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("BrowseChildren() error = %v, want explicit browse error", err)
+	}
+	for _, entry := range app.GetDiagnosticLogs() {
+		if strings.Contains(entry.Message, "Browse failed for ns=2;s=BadArea") && strings.Contains(entry.Message, "access denied") {
+			return
+		}
+	}
+	t.Fatalf("diagnostic logs = %#v, want explicit browse failure diagnostic", app.GetDiagnosticLogs())
+}
+
 func TestExplicitBrowseAddsDiscoveredChildrenToSearchImmediately(t *testing.T) {
 	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
 		"ns=2;s=ManualArea": {{NodeID: "ns=2;s=ManualTemperature", DisplayName: "Manual Temperature", BrowseName: "2:ManualTemperature", NodeClass: "Variable"}},
@@ -294,6 +320,111 @@ func TestExplicitBrowseAddsDiscoveredChildrenToSearchImmediately(t *testing.T) {
 	if len(view.Results) != 1 || view.Results[0].Node.NodeID != "ns=2;s=ManualTemperature" {
 		t.Fatalf("SearchAddressSpace() = %#v, want explicitly browsed child immediately searchable", view)
 	}
+}
+
+func TestBackgroundShallowAddressSpaceIndexingBrowseFailureRecordsDiagnostic(t *testing.T) {
+	client := &recordingClient{
+		browseChildren: map[string][]opcua.AddressNode{
+			"i=85": {{NodeID: "ns=2;s=BadArea", DisplayName: "Bad Area", BrowseName: "2:BadArea", NodeClass: "Object"}},
+		},
+		browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")},
+	}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		for _, entry := range app.GetDiagnosticLogs() {
+			if strings.Contains(entry.Message, "Shallow Address Space Indexing browse failed for ns=2;s=BadArea") && strings.Contains(entry.Message, "access denied") {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("diagnostic logs = %#v, want background browse failure with parent node identity and error", app.GetDiagnosticLogs())
+}
+
+func TestBackgroundShallowAddressSpaceIndexingDoesNotRetryFailedParentInLoop(t *testing.T) {
+	client := &recordingClient{
+		browseChildren: map[string][]opcua.AddressNode{
+			"i=85": {{NodeID: "ns=2;s=BadArea", DisplayName: "Bad Area", BrowseName: "2:BadArea", NodeClass: "Object"}},
+		},
+		browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")},
+	}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		requests := client.recordedBrowseRequests()
+		if countBrowseRequests(requests, "ns=2;s=BadArea") == 1 {
+			time.Sleep(50 * time.Millisecond)
+			requests = client.recordedBrowseRequests()
+			if got := countBrowseRequests(requests, "ns=2;s=BadArea"); got != 1 {
+				t.Fatalf("browse requests = %#v, want failed parent browsed once", requests)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("browse requests = %#v, want failed parent attempted", client.recordedBrowseRequests())
+}
+
+func countBrowseRequests(requests []string, nodeID string) int {
+	count := 0
+	for _, request := range requests {
+		if request == nodeID {
+			count++
+		}
+	}
+	return count
+}
+
+func TestBackgroundShallowAddressSpaceIndexingContinuesAfterBrowseFailure(t *testing.T) {
+	client := &recordingClient{
+		browseChildren: map[string][]opcua.AddressNode{
+			"i=85": {
+				{NodeID: "ns=2;s=BadArea", DisplayName: "Bad Area", BrowseName: "2:BadArea", NodeClass: "Object"},
+				{NodeID: "ns=2;s=GoodArea", DisplayName: "Good Area", BrowseName: "2:GoodArea", NodeClass: "Object"},
+			},
+			"ns=2;s=GoodArea": {{NodeID: "ns=2;s=GoodPressure", DisplayName: "Good Pressure", BrowseName: "2:GoodPressure", NodeClass: "Variable"}},
+		},
+		browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")},
+	}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		view, err := app.SearchAddressSpace("Good Pressure")
+		if err != nil {
+			t.Fatalf("SearchAddressSpace() error = %v", err)
+		}
+		if len(view.Results) == 1 && view.Results[0].Node.NodeID == "ns=2;s=GoodPressure" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	view, _ := app.SearchAddressSpace("Good Pressure")
+	t.Fatalf("SearchAddressSpace() = %#v, want indexing to continue after failed parent", view)
 }
 
 func TestAddressSpaceSearchStatusMentionsBrowsedAndShallowIndexedMetadata(t *testing.T) {

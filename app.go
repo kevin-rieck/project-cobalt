@@ -21,6 +21,7 @@ const (
 	eventSessionTrendUpdated          = "session-trend-updated"
 	eventDiagnosticLogAppended        = "diagnostic-log-appended"
 	defaultShallowIndexBrowseInterval = time.Second
+	defaultShallowIndexBrowseBudget   = 250
 )
 
 // App is the Wails backend boundary for OPC UA Studio.
@@ -39,6 +40,7 @@ type App struct {
 	shallowIndexCancel         context.CancelFunc
 	shallowIndexPrioritize     chan []opcua.AddressNode
 	shallowIndexBrowseInterval time.Duration
+	shallowIndexBrowseBudget   int
 }
 
 // NewApp creates a new App application struct.
@@ -47,7 +49,7 @@ func NewApp() *App {
 }
 
 func NewAppWithSavedConnectionStore(path string) *App {
-	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, shallowIndexBrowseInterval: defaultShallowIndexBrowseInterval}
+	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, shallowIndexBrowseInterval: defaultShallowIndexBrowseInterval, shallowIndexBrowseBudget: defaultShallowIndexBrowseBudget}
 }
 
 // startup is called when the app starts. The context is saved so we can emit runtime events.
@@ -290,7 +292,11 @@ func (a *App) startShallowAddressSpaceIndexingLocked() {
 	if interval <= 0 {
 		interval = defaultShallowIndexBrowseInterval
 	}
-	go a.runShallowAddressSpaceIndexing(ctx, client, interval, prioritize)
+	budget := a.shallowIndexBrowseBudget
+	if budget <= 0 {
+		budget = defaultShallowIndexBrowseBudget
+	}
+	go a.runShallowAddressSpaceIndexing(ctx, client, interval, budget, prioritize)
 }
 
 func (a *App) cancelShallowAddressSpaceIndexingLocked() {
@@ -301,11 +307,13 @@ func (a *App) cancelShallowAddressSpaceIndexingLocked() {
 	}
 }
 
-func (a *App) runShallowAddressSpaceIndexing(ctx context.Context, client opcua.Client, interval time.Duration, prioritize <-chan []opcua.AddressNode) {
+func (a *App) runShallowAddressSpaceIndexing(ctx context.Context, client opcua.Client, interval time.Duration, browseBudget int, prioritize chan []opcua.AddressNode) {
+	defer a.finishShallowAddressSpaceIndexing(prioritize)
 	priorityQueue := []string{}
 	backgroundQueue := []string{objectsRootNode().NodeID}
 	seen := map[string]bool{objectsRootNode().NodeID: true}
 	firstBrowse := true
+	browseCount := 0
 
 	for {
 		drainShallowIndexPriorityRequests(prioritize, &priorityQueue, seen)
@@ -345,6 +353,10 @@ func (a *App) runShallowAddressSpaceIndexing(ctx context.Context, client opcua.C
 			nodeID = backgroundQueue[0]
 			backgroundQueue = backgroundQueue[1:]
 		}
+		if browseCount >= browseBudget {
+			return
+		}
+		browseCount++
 		children, err := client.BrowseChildren(ctx, nodeID)
 		if err != nil {
 			if ctx.Err() == nil {
@@ -361,6 +373,18 @@ func (a *App) runShallowAddressSpaceIndexing(ctx context.Context, client opcua.C
 		} else {
 			enqueueShallowIndexParentNodes(children, &backgroundQueue, seen)
 		}
+		if browseCount >= browseBudget {
+			return
+		}
+	}
+}
+
+func (a *App) finishShallowAddressSpaceIndexing(prioritize chan []opcua.AddressNode) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.shallowIndexPrioritize == prioritize {
+		a.shallowIndexCancel = nil
+		a.shallowIndexPrioritize = nil
 	}
 }
 

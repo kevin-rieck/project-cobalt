@@ -14,16 +14,25 @@ import (
 )
 
 type recordingClient struct {
-	mu              sync.Mutex
-	connectErr      error
-	connectRequests []opcua.ConnectRequest
-	browseChildren  map[string][]opcua.AddressNode
-	browseErrors    map[string]error
-	browseRequests  []string
-	browseTimes     []time.Time
-	readValues      map[string]opcua.LiveValue
-	readValueErrors map[string]error
-	readValueIDs    []string
+	mu               sync.Mutex
+	connectErr       error
+	connectRequests  []opcua.ConnectRequest
+	browseChildren   map[string][]opcua.AddressNode
+	browseErrors     map[string]error
+	browseRequests   []string
+	browseTimes      []time.Time
+	readValues       map[string]opcua.LiveValue
+	readValueErrors  map[string]error
+	readValueIDs     []string
+	readDetails      map[string]opcua.NodeDetails
+	readDetailErrors map[string]error
+	writeErrors      map[string]error
+	writeRequests    []recordedWrite
+}
+
+type recordedWrite struct {
+	nodeID string
+	value  opcua.ScalarValue
 }
 
 func (c *recordingClient) DiscoverEndpoints(context.Context, string) ([]opcua.Endpoint, error) {
@@ -67,8 +76,16 @@ func (c *recordingClient) recordedBrowseTimes() []time.Time {
 	return times
 }
 
-func (c *recordingClient) ReadNodeDetails(context.Context, string) (opcua.NodeDetails, error) {
-	return opcua.NodeDetails{}, nil
+func (c *recordingClient) ReadNodeDetails(_ context.Context, nodeID string) (opcua.NodeDetails, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.readDetailErrors[nodeID]; err != nil {
+		return opcua.NodeDetails{}, err
+	}
+	if c.readDetails == nil {
+		return opcua.NodeDetails{}, nil
+	}
+	return c.readDetails[nodeID], nil
 }
 
 func (c *recordingClient) ReadValue(_ context.Context, nodeID string) (opcua.LiveValue, error) {
@@ -82,6 +99,13 @@ func (c *recordingClient) ReadValue(_ context.Context, nodeID string) (opcua.Liv
 		return opcua.LiveValue{NodeID: nodeID}, nil
 	}
 	return c.readValues[nodeID], nil
+}
+
+func (c *recordingClient) WriteValue(_ context.Context, nodeID string, value opcua.ScalarValue) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writeRequests = append(c.writeRequests, recordedWrite{nodeID: nodeID, value: value})
+	return c.writeErrors[nodeID]
 }
 
 func (c *recordingClient) SubscribeValue(context.Context, string) (<-chan opcua.LiveValue, opcua.ValueSubscription, error) {
@@ -466,6 +490,103 @@ func TestRefreshVariableNodeValueFailureMarksStaleAndRecordsInlineError(t *testi
 	trend := app.GetSessionTrend("ns=2;s=Level")
 	if len(trend.Points) != 1 || trend.Points[0].Value != "80" {
 		t.Fatalf("Session Trend after failed refresh = %#v, want no failed read point appended", trend)
+	}
+}
+
+func TestWriteVariableNodeValueWritesTypedScalarAndRefreshesReadBack(t *testing.T) {
+	node := opcua.AddressNode{NodeID: "ns=2;s=Level", DisplayName: "Tank Level", NodeClass: "Variable"}
+	client := &recordingClient{
+		readDetails: map[string]opcua.NodeDetails{"ns=2;s=Level": {NodeID: "ns=2;s=Level", DataType: "Double", Writable: true, ValueRank: "Scalar"}},
+		readValues:  map[string]opcua.LiveValue{"ns=2;s=Level": {NodeID: "ns=2;s=Level", Value: "42", Status: "Good"}},
+	}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+	app.connected = true
+	app.readOnlyMode = false
+	app.inspections.Select(node)
+	app.inspections.Watch(node)
+	app.inspections.ApplyDetails("ns=2;s=Level", opcua.NodeDetails{NodeID: "ns=2;s=Level", DataType: "Double", Writable: true, ValueRank: "Scalar"}, nil)
+	app.inspections.ApplyLiveValue("ns=2;s=Level", opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "40", Status: "Good"}, nil)
+
+	result, err := app.WriteVariableNodeValue(VariableNodeWriteRequest{NodeID: "ns=2;s=Level", TargetValue: "42"})
+	if err != nil {
+		t.Fatalf("WriteVariableNodeValue() error = %v", err)
+	}
+	if result.Status != "success" || result.TargetValue != "42" || result.ReadBack.Value != "42" || result.Warning != "" {
+		t.Fatalf("WriteVariableNodeValue() result = %#v, want success with read-back", result)
+	}
+	if len(client.writeRequests) != 1 || client.writeRequests[0].nodeID != "ns=2;s=Level" || client.writeRequests[0].value.Value != float64(42) {
+		t.Fatalf("write requests = %#v, want typed Double write", client.writeRequests)
+	}
+	selected, _ := app.inspections.Selected()
+	if selected.Value.Value != "42" || selected.UpdateCount != 2 || selected.Stale {
+		t.Fatalf("selected inspection after write = %#v", selected)
+	}
+}
+
+func TestWriteVariableNodeValueRejectsReadOnlyStaleUnsupportedAndNotWritable(t *testing.T) {
+	node := opcua.AddressNode{NodeID: "ns=2;s=Level", DisplayName: "Tank Level", NodeClass: "Variable"}
+	tests := []struct {
+		name     string
+		readOnly bool
+		details  opcua.NodeDetails
+		stale    bool
+		want     string
+	}{
+		{name: "read-only", readOnly: true, details: opcua.NodeDetails{NodeID: node.NodeID, DataType: "Double", Writable: true, ValueRank: "Scalar"}, want: "Read-Only Mode"},
+		{name: "stale", details: opcua.NodeDetails{NodeID: node.NodeID, DataType: "Double", Writable: true, ValueRank: "Scalar"}, stale: true, want: "stale"},
+		{name: "unsupported", details: opcua.NodeDetails{NodeID: node.NodeID, DataType: "DateTime", Writable: true, ValueRank: "Scalar"}, want: "unsupported"},
+		{name: "not writable", details: opcua.NodeDetails{NodeID: node.NodeID, DataType: "Double", Writable: false, ValueRank: "Scalar"}, want: "not writable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+			app.client = &recordingClient{readDetails: map[string]opcua.NodeDetails{node.NodeID: tt.details}}
+			app.connected = true
+			app.readOnlyMode = tt.readOnly
+			app.inspections.Select(node)
+			app.inspections.ApplyDetails(node.NodeID, tt.details, nil)
+			app.inspections.ApplyLiveValue(node.NodeID, opcua.LiveValue{NodeID: node.NodeID, Value: "40", Status: "Good"}, nil)
+			if tt.stale {
+				app.inspections.ApplyLiveValue(node.NodeID, opcua.LiveValue{}, errors.New("read failed"))
+			}
+
+			_, err := app.WriteVariableNodeValue(VariableNodeWriteRequest{NodeID: node.NodeID, TargetValue: "42"})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("WriteVariableNodeValue() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestWriteVariableNodeValueReportsFailureAndReadBackMismatch(t *testing.T) {
+	node := opcua.AddressNode{NodeID: "ns=2;s=Level", DisplayName: "Tank Level", NodeClass: "Variable"}
+	details := opcua.NodeDetails{NodeID: node.NodeID, DataType: "Int32", Writable: true, ValueRank: "Scalar"}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = &recordingClient{readDetails: map[string]opcua.NodeDetails{node.NodeID: details}, readValues: map[string]opcua.LiveValue{node.NodeID: {NodeID: node.NodeID, Value: "41", Status: "Good"}}}
+	app.connected = true
+	app.readOnlyMode = false
+	app.inspections.Select(node)
+	app.inspections.ApplyDetails(node.NodeID, details, nil)
+	app.inspections.ApplyLiveValue(node.NodeID, opcua.LiveValue{NodeID: node.NodeID, Value: "40", Status: "Good"}, nil)
+
+	result, err := app.WriteVariableNodeValue(VariableNodeWriteRequest{NodeID: node.NodeID, TargetValue: "42"})
+	if err != nil {
+		t.Fatalf("WriteVariableNodeValue() mismatch error = %v", err)
+	}
+	if result.Status != "warning" || !strings.Contains(result.Warning, "read-back mismatch") {
+		t.Fatalf("mismatch result = %#v, want warning", result)
+	}
+
+	failing := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	failing.client = &recordingClient{readDetails: map[string]opcua.NodeDetails{node.NodeID: details}, writeErrors: map[string]error{node.NodeID: errors.New("write denied")}}
+	failing.connected = true
+	failing.readOnlyMode = false
+	failing.inspections.Select(node)
+	failing.inspections.ApplyDetails(node.NodeID, details, nil)
+	failing.inspections.ApplyLiveValue(node.NodeID, opcua.LiveValue{NodeID: node.NodeID, Value: "40", Status: "Good"}, nil)
+	if _, err := failing.WriteVariableNodeValue(VariableNodeWriteRequest{NodeID: node.NodeID, TargetValue: "42"}); err == nil || !strings.Contains(err.Error(), "write denied") {
+		t.Fatalf("WriteVariableNodeValue() failure error = %v, want write denied", err)
 	}
 }
 

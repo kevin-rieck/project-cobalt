@@ -120,6 +120,19 @@ type WatchlistRowView struct {
 	DetailsError    string            `json:"detailsError"`
 }
 
+type VariableNodeWriteRequest struct {
+	NodeID      string `json:"nodeID"`
+	TargetValue string `json:"targetValue"`
+}
+
+type VariableNodeWriteResult struct {
+	NodeID      string          `json:"nodeID"`
+	TargetValue string          `json:"targetValue"`
+	Status      string          `json:"status"`
+	ReadBack    opcua.LiveValue `json:"readBack"`
+	Warning     string          `json:"warning"`
+}
+
 func objectsRootNode() opcua.AddressNode {
 	return opcua.AddressNode{NodeID: "i=85", DisplayName: "Objects", BrowseName: "Objects", NodeClass: "Object"}
 }
@@ -591,6 +604,112 @@ func (a *App) RefreshVariableNodeValue(nodeID string) error {
 	}
 	a.appendLog("info", fmt.Sprintf("Refreshing Live Value for Variable Node %s", nodeID))
 	value, err := a.client.ReadValue(a.ctx, nodeID)
+	a.applyReadBack(nodeID, value, err)
+	return err
+}
+
+func (a *App) WriteVariableNodeValue(request VariableNodeWriteRequest) (VariableNodeWriteResult, error) {
+	nodeID := strings.TrimSpace(request.NodeID)
+	if nodeID == "" {
+		return VariableNodeWriteResult{}, fmt.Errorf("Variable Node Write requires a node ID")
+	}
+	a.appendLog("info", fmt.Sprintf("Variable Node Write attempted for %s target %q", nodeID, request.TargetValue))
+	inspection, err := a.prepareVariableNodeWrite(nodeID)
+	if err != nil {
+		a.appendLog("error", fmt.Sprintf("Variable Node Write failed for %s: %v", nodeID, err))
+		return VariableNodeWriteResult{}, err
+	}
+	target, err := opcua.ParseScalarValue(inspection.Details.DataType, request.TargetValue)
+	if err != nil {
+		a.appendLog("error", fmt.Sprintf("Variable Node Write failed for %s: %v", nodeID, err))
+		return VariableNodeWriteResult{}, err
+	}
+	if err := a.client.WriteValue(a.ctx, nodeID, target); err != nil {
+		a.appendLog("error", fmt.Sprintf("Variable Node Write failed for %s: %v", nodeID, err))
+		return VariableNodeWriteResult{}, err
+	}
+	a.appendLog("info", fmt.Sprintf("Variable Node Write accepted for %s target %q", nodeID, target.Normalized))
+	readBack, readErr := a.client.ReadValue(a.ctx, nodeID)
+	a.appendLog("info", fmt.Sprintf("Variable Node Write read-back for %s: value=%q status=%s", nodeID, readBack.Value, readBack.Status))
+	a.applyReadBack(nodeID, readBack, readErr)
+	if readErr != nil {
+		a.appendLog("error", fmt.Sprintf("Variable Node Write failed for %s: read-back failed: %v", nodeID, readErr))
+		return VariableNodeWriteResult{}, readErr
+	}
+	result := VariableNodeWriteResult{NodeID: nodeID, TargetValue: target.Normalized, Status: "success", ReadBack: readBack}
+	if !scalarReadBackMatches(target, readBack.Value) {
+		result.Status = "warning"
+		result.Warning = fmt.Sprintf("read-back mismatch: target %q but server returned %q", target.Normalized, readBack.Value)
+	}
+	return result, nil
+}
+
+func (a *App) prepareVariableNodeWrite(nodeID string) (session.VariableNodeInspection, error) {
+	a.mu.Lock()
+	connected := a.connected
+	readOnly := a.readOnlyMode
+	inspection, ok := a.inspections.Inspection(nodeID)
+	a.mu.Unlock()
+	if !connected {
+		return session.VariableNodeInspection{}, fmt.Errorf("Variable Node Write requires a connected session")
+	}
+	if readOnly {
+		return session.VariableNodeInspection{}, fmt.Errorf("Variable Node Write is blocked while Read-Only Mode is active")
+	}
+	if !ok {
+		return session.VariableNodeInspection{}, fmt.Errorf("Variable Node Write requires an active Variable Node Inspection or Watchlist row")
+	}
+	if inspection.Stale || inspection.Err != nil || inspection.Value.NodeID == "" {
+		return session.VariableNodeInspection{}, fmt.Errorf("Variable Node Write is blocked because the current Live Value is stale or unavailable")
+	}
+	details, err := a.client.ReadNodeDetails(a.ctx, nodeID)
+	a.mu.Lock()
+	a.inspections.ApplyDetails(nodeID, details, err)
+	inspection, _ = a.inspections.Inspection(nodeID)
+	view := a.currentInspectionLocked()
+	rows := a.watchlistLocked()
+	a.mu.Unlock()
+	a.emitInspection(view)
+	a.emitWatchlistRows(rows)
+	if err != nil {
+		return session.VariableNodeInspection{}, err
+	}
+	if err := validateVariableNodeWriteDetails(details); err != nil {
+		return session.VariableNodeInspection{}, err
+	}
+	inspection.Details = details
+	return inspection, nil
+}
+
+func validateVariableNodeWriteDetails(details opcua.NodeDetails) error {
+	if details.ValueRank != "" && details.ValueRank != "Scalar" {
+		return fmt.Errorf("Variable Node Write does not support arrays or non-scalar ValueRank %q", details.ValueRank)
+	}
+	if !details.Writable {
+		return fmt.Errorf("Variable Node %s is not writable in this session", details.NodeID)
+	}
+	if _, err := opcua.ParseScalarValue(details.DataType, zeroValueForDataType(details.DataType)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func zeroValueForDataType(dataType string) string {
+	if dataType == "Boolean" {
+		return "false"
+	}
+	return "0"
+}
+
+func scalarReadBackMatches(target opcua.ScalarValue, readBack string) bool {
+	parsed, err := opcua.ParseScalarValue(target.DataType, readBack)
+	if err != nil {
+		return false
+	}
+	return parsed.Normalized == target.Normalized
+}
+
+func (a *App) applyReadBack(nodeID string, value opcua.LiveValue, err error) {
 	a.mu.Lock()
 	requests := a.inspections.ApplyLiveValue(nodeID, value, err)
 	view := a.currentInspectionLocked()
@@ -605,7 +724,6 @@ func (a *App) RefreshVariableNodeValue(nodeID string) error {
 		a.scheduleSessionTrendUpdate()
 	}
 	a.executeInspectionRequests(requests)
-	return err
 }
 
 func (a *App) GetDiagnosticLogs() []DiagnosticLogEntry {

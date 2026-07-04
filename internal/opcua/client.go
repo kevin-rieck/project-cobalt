@@ -23,6 +23,7 @@ type Client interface {
 	BrowseChildren(ctx context.Context, nodeID string) ([]AddressNode, error)
 	ReadNodeDetails(ctx context.Context, nodeID string) (NodeDetails, error)
 	ReadValue(ctx context.Context, nodeID string) (LiveValue, error)
+	WriteValue(ctx context.Context, nodeID string, value ScalarValue) error
 	SubscribeValue(ctx context.Context, nodeID string) (<-chan LiveValue, ValueSubscription, error)
 	Close(ctx context.Context) error
 }

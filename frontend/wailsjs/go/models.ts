@@ -112,6 +112,20 @@ export namespace main {
 	        this.message = source["message"];
 	    }
 	}
+	export class SessionSafetyView {
+	    connected: boolean;
+	    readOnlyMode: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionSafetyView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.readOnlyMode = source["readOnlyMode"];
+	    }
+	}
 	export class WatchlistRowView {
 	    node: opcua.AddressNode;
 	    value: opcua.LiveValue;

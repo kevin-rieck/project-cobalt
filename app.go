@@ -20,6 +20,7 @@ const (
 	eventWatchlistUpdated             = "watchlist-updated"
 	eventSessionTrendUpdated          = "session-trend-updated"
 	eventDiagnosticLogAppended        = "diagnostic-log-appended"
+	eventSessionSafetyUpdated         = "session-safety-updated"
 	defaultShallowIndexBrowseInterval = time.Second
 	defaultShallowIndexBrowseBudget   = 250
 )
@@ -36,6 +37,7 @@ type App struct {
 	savedConnections            []connections.SavedConnection
 	savedStore                  *connections.FileStore
 	connected                   bool
+	readOnlyMode                bool
 	trendNotifyPending          bool
 	shallowIndexCancel          context.CancelFunc
 	shallowIndexPrioritize      chan []opcua.AddressNode
@@ -50,7 +52,7 @@ func NewApp() *App {
 }
 
 func NewAppWithSavedConnectionStore(path string) *App {
-	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, shallowIndexBrowseInterval: defaultShallowIndexBrowseInterval, shallowIndexBrowseBudget: defaultShallowIndexBrowseBudget}
+	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, readOnlyMode: true, shallowIndexBrowseInterval: defaultShallowIndexBrowseInterval, shallowIndexBrowseBudget: defaultShallowIndexBrowseBudget}
 }
 
 // startup is called when the app starts. The context is saved so we can emit runtime events.
@@ -70,6 +72,11 @@ type DiagnosticLogEntry struct {
 	Timestamp string `json:"timestamp"`
 	Level     string `json:"level"`
 	Message   string `json:"message"`
+}
+
+type SessionSafetyView struct {
+	Connected    bool `json:"connected"`
+	ReadOnlyMode bool `json:"readOnlyMode"`
 }
 
 type ConnectionRequest struct {
@@ -115,6 +122,29 @@ type WatchlistRowView struct {
 
 func objectsRootNode() opcua.AddressNode {
 	return opcua.AddressNode{NodeID: "i=85", DisplayName: "Objects", BrowseName: "Objects", NodeClass: "Object"}
+}
+
+func (a *App) GetSessionSafety() SessionSafetyView {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.sessionSafetyLocked()
+}
+
+func (a *App) SetReadOnlyMode(enabled bool) error {
+	a.mu.Lock()
+	if !enabled && !a.connected {
+		a.mu.Unlock()
+		return fmt.Errorf("Read-Only Mode can be disabled only for a connected session")
+	}
+	wasReadOnly := a.readOnlyMode
+	a.readOnlyMode = enabled
+	view := a.sessionSafetyLocked()
+	a.mu.Unlock()
+	if enabled && !wasReadOnly {
+		a.appendLog("info", "Read-Only Mode enabled")
+	}
+	a.emitSessionSafetyUpdated(view)
+	return nil
 }
 
 func (a *App) DiscoverEndpoints(endpoint string) ([]opcua.Endpoint, error) {
@@ -227,12 +257,15 @@ func (a *App) Connect(request ConnectionRequest) error {
 	a.mu.Lock()
 	a.cancelShallowAddressSpaceIndexingLocked()
 	a.connected = true
+	a.readOnlyMode = true
 	a.inspections = session.NewInspectionSet()
 	a.addressSpaceSearch.Reset()
 	a.shallowIndexBudgetExhausted = false
 	a.addressSpaceSearch.AddNodes([]opcua.AddressNode{objectsRootNode()})
 	a.startShallowAddressSpaceIndexingLocked()
+	safety := a.sessionSafetyLocked()
 	a.mu.Unlock()
+	a.emitSessionSafetyUpdated(safety)
 	a.emitInspection(nil)
 	a.emitWatchlist()
 	a.emitSessionTrendUpdated()
@@ -273,7 +306,10 @@ func (a *App) Disconnect() error {
 	a.addressSpaceSearch.Reset()
 	a.shallowIndexBudgetExhausted = false
 	a.connected = false
+	a.readOnlyMode = true
+	safety := a.sessionSafetyLocked()
 	a.mu.Unlock()
+	a.emitSessionSafetyUpdated(safety)
 	a.emitInspection(nil)
 	a.emitWatchlist()
 	a.emitSessionTrendUpdated()
@@ -735,6 +771,16 @@ func (a *App) scheduleSessionTrendUpdate() {
 func (a *App) emitSessionTrendUpdated() {
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, eventSessionTrendUpdated)
+	}
+}
+
+func (a *App) sessionSafetyLocked() SessionSafetyView {
+	return SessionSafetyView{Connected: a.connected, ReadOnlyMode: a.readOnlyMode}
+}
+
+func (a *App) emitSessionSafetyUpdated(view SessionSafetyView) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, eventSessionSafetyUpdated, view)
 	}
 }
 

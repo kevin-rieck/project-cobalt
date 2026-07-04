@@ -34,6 +34,10 @@ export function GetSavedConnections() {
   return window['go']['main']['App']['GetSavedConnections']();
 }
 
+export function GetSessionSafety() {
+  return window['go']['main']['App']['GetSessionSafety']();
+}
+
 export function GetSessionTrend(arg1) {
   return window['go']['main']['App']['GetSessionTrend'](arg1);
 }
@@ -64,6 +68,10 @@ export function SaveSavedConnection(arg1) {
 
 export function SearchAddressSpace(arg1) {
   return window['go']['main']['App']['SearchAddressSpace'](arg1);
+}
+
+export function SetReadOnlyMode(arg1) {
+  return window['go']['main']['App']['SetReadOnlyMode'](arg1);
 }
 
 export function UnwatchVariableNode(arg1) {

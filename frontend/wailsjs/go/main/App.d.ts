@@ -22,6 +22,8 @@ export function GetDiagnosticLogs():Promise<Array<main.DiagnosticLogEntry>>;
 
 export function GetSavedConnections():Promise<Array<connections.SavedConnection>>;
 
+export function GetSessionSafety():Promise<main.SessionSafetyView>;
+
 export function GetSessionTrend(arg1:string):Promise<session.SessionTrendView>;
 
 export function GetWatchlist():Promise<Array<main.WatchlistRowView>>;
@@ -37,6 +39,8 @@ export function RefreshVariableNodeValue(arg1:string):Promise<void>;
 export function SaveSavedConnection(arg1:main.ConnectionRequest):Promise<connections.SavedConnection>;
 
 export function SearchAddressSpace(arg1:string):Promise<search.AddressSpaceSearchView>;
+
+export function SetReadOnlyMode(arg1:boolean):Promise<void>;
 
 export function UnwatchVariableNode(arg1:string):Promise<void>;
 

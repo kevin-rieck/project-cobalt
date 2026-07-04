@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, RefreshVariableNodeValue, SaveSavedConnection, SearchAddressSpace, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
+  import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionSafety, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, RefreshVariableNodeValue, SaveSavedConnection, SearchAddressSpace, SetReadOnlyMode, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
   import { getReadmeScreenshotState } from './readmeScreenshots'
 
@@ -106,6 +106,7 @@
   }
 
   type DiagnosticLogEntry = { timestamp: string; level: string; message: string }
+  type SessionSafety = { connected: boolean; readOnlyMode: boolean }
 
   type SavedConnection = {
     id: string
@@ -148,6 +149,7 @@
   let discovering = false
   let connecting = false
   let connected = readmeScreenshotState?.connected ?? false
+  let readOnlyMode = true
   let connectionError = ''
   let currentConnection = readmeScreenshotState?.currentConnection ?? ''
   let savedConnections: SavedConnection[] = (readmeScreenshotState?.savedConnections as SavedConnection[]) ?? []
@@ -186,6 +188,8 @@
 
     logs = await GetDiagnosticLogs()
     savedConnections = await GetSavedConnections()
+    const sessionSafety = await GetSessionSafety()
+    applySessionSafety(sessionSafety)
     watchlist = await GetWatchlist()
     sessionTrend = await GetSessionTrend(focusedTrendNodeID)
     const offInspection = EventsOn('variable-inspection-updated', (payload: Inspection | null) => {
@@ -203,13 +207,22 @@
     const offLog = EventsOn('diagnostic-log-appended', (entry: DiagnosticLogEntry) => {
       logs = [...logs, entry].slice(-500)
     })
+    const offSessionSafety = EventsOn('session-safety-updated', (payload: SessionSafety) => {
+      applySessionSafety(payload)
+    })
     return () => {
       offInspection()
       offWatchlist()
       offTrend()
       offLog()
+      offSessionSafety()
     }
   })
+
+  function applySessionSafety(sessionSafety: SessionSafety) {
+    connected = sessionSafety.connected
+    readOnlyMode = sessionSafety.readOnlyMode
+  }
 
   function addToast(level: string, message: string) {
     const id = Date.now() + Math.random()
@@ -284,7 +297,8 @@
           saveConnectionError = String(error)
         }
       }
-      connected = true
+      const sessionSafety = await GetSessionSafety()
+      applySessionSafety(sessionSafety)
       currentConnection = endpointText
       savedConnections = await GetSavedConnections()
       tree = [{ ...objectsRoot }]
@@ -385,7 +399,8 @@
   async function disconnect() {
     try {
       await Disconnect()
-      connected = false
+      const sessionSafety = await GetSessionSafety()
+      applySessionSafety(sessionSafety)
       currentConnection = ''
       tree = [{ ...objectsRoot }]
       selectedNodeID = ''
@@ -396,6 +411,18 @@
       resetSearchView()
       activeTab = 'connections'
       addToast('info', 'Disconnected')
+    } catch (error) {
+      addToast('error', String(error))
+    }
+  }
+
+  async function setReadOnlyMode(enabled: boolean) {
+    if (!enabled && !window.confirm('Allow Variable Node Writes?\n\nThis enables Variable Node Writes until you disconnect or turn Read-Only Mode back on. Each write still requires confirmation.')) return
+    try {
+      await SetReadOnlyMode(enabled)
+      const sessionSafety = await GetSessionSafety()
+      applySessionSafety(sessionSafety)
+      addToast('info', enabled ? 'Read-Only Mode enabled' : 'Writes allowed for this session')
     } catch (error) {
       addToast('error', String(error))
     }
@@ -685,6 +712,12 @@
       </div>
       <div class="flex items-center gap-sm">
         {#if connected}
+          <span class="rounded border border-outline-variant px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Writes Allowed'}</span>
+          {#if readOnlyMode}
+            <button class="btn-secondary" on:click={() => setReadOnlyMode(false)}>Allow writes this session</button>
+          {:else}
+            <button class="btn-secondary" on:click={() => setReadOnlyMode(true)}>Read-Only Mode</button>
+          {/if}
           <button class="btn-secondary" on:click={disconnect}>Disconnect</button>
         {:else}
           <button class="btn-primary" on:click={() => (activeTab = 'connections')}>Connect</button>

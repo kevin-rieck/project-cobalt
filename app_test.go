@@ -165,6 +165,76 @@ func TestStartupWithCorruptSavedConnectionStorageLogsDiagnosticAndManualConnectS
 	}
 }
 
+func TestSessionSafetyDefaultsToReadOnlyAndRequiresConnectedSessionToAllowWrites(t *testing.T) {
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+
+	safety := app.GetSessionSafety()
+	if safety.Connected || !safety.ReadOnlyMode {
+		t.Fatalf("initial GetSessionSafety() = %#v, want disconnected Read-Only Mode", safety)
+	}
+	if err := app.SetReadOnlyMode(false); err == nil || !strings.Contains(err.Error(), "connected session") {
+		t.Fatalf("SetReadOnlyMode(false) while disconnected error = %v, want connected session error", err)
+	}
+}
+
+func TestSessionSafetyResetsToReadOnlyOnConnectAndDisconnect(t *testing.T) {
+	client := &recordingClient{}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	if safety := app.GetSessionSafety(); !safety.Connected || !safety.ReadOnlyMode {
+		t.Fatalf("GetSessionSafety() after Connect = %#v, want connected Read-Only Mode", safety)
+	}
+	if err := app.SetReadOnlyMode(false); err != nil {
+		t.Fatalf("SetReadOnlyMode(false) error = %v", err)
+	}
+	if safety := app.GetSessionSafety(); !safety.Connected || safety.ReadOnlyMode {
+		t.Fatalf("GetSessionSafety() after Allow Writes = %#v, want writes allowed", safety)
+	}
+
+	if err := app.Disconnect(); err != nil {
+		t.Fatalf("Disconnect() error = %v", err)
+	}
+	if safety := app.GetSessionSafety(); safety.Connected || !safety.ReadOnlyMode {
+		t.Fatalf("GetSessionSafety() after Disconnect = %#v, want disconnected Read-Only Mode", safety)
+	}
+	app.client = client
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("second Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+	if safety := app.GetSessionSafety(); !safety.Connected || !safety.ReadOnlyMode {
+		t.Fatalf("GetSessionSafety() after reconnect = %#v, want new session Read-Only Mode", safety)
+	}
+}
+
+func TestReenablingReadOnlyModeRecordsDiagnosticLog(t *testing.T) {
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = &recordingClient{}
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+	if err := app.SetReadOnlyMode(false); err != nil {
+		t.Fatalf("SetReadOnlyMode(false) error = %v", err)
+	}
+
+	if err := app.SetReadOnlyMode(true); err != nil {
+		t.Fatalf("SetReadOnlyMode(true) error = %v", err)
+	}
+
+	for _, entry := range app.GetDiagnosticLogs() {
+		if entry.Level == "info" && strings.Contains(entry.Message, "Read-Only Mode enabled") {
+			return
+		}
+	}
+	t.Fatalf("diagnostic logs = %#v, want Read-Only Mode enabled entry", app.GetDiagnosticLogs())
+}
+
 func TestConnectStartsShallowAddressSpaceIndexingFromObjectsNode(t *testing.T) {
 	client := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
 		"i=85": {{NodeID: "ns=2;s=PumpA", DisplayName: "Pump A", BrowseName: "2:PumpA", NodeClass: "Variable"}},

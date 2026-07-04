@@ -536,6 +536,7 @@ func TestWriteVariableNodeValueRejectsReadOnlyStaleUnsupportedAndNotWritable(t *
 		{name: "read-only", readOnly: true, details: opcua.NodeDetails{NodeID: node.NodeID, DataType: "Double", Writable: true, ValueRank: "Scalar"}, want: "Read-Only Mode"},
 		{name: "stale", details: opcua.NodeDetails{NodeID: node.NodeID, DataType: "Double", Writable: true, ValueRank: "Scalar"}, stale: true, want: "stale"},
 		{name: "unsupported", details: opcua.NodeDetails{NodeID: node.NodeID, DataType: "DateTime", Writable: true, ValueRank: "Scalar"}, want: "unsupported"},
+		{name: "array", details: opcua.NodeDetails{NodeID: node.NodeID, DataType: "Double", Writable: true, ValueRank: "OneDimension"}, want: "arrays or non-scalar"},
 		{name: "not writable", details: opcua.NodeDetails{NodeID: node.NodeID, DataType: "Double", Writable: false, ValueRank: "Scalar"}, want: "not writable"},
 	}
 	for _, tt := range tests {

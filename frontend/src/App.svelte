@@ -655,13 +655,14 @@
 
   function parseWriteTargetError(dataType: string, target: string) {
     const trimmed = target.trim()
-    if (!trimmed) return 'Enter a Target Value.'
     if (!dataType || !isSupportedWriteDataType(dataType)) return ''
     if (dataType === 'String') return ''
+    if (!trimmed) return 'Enter a Target Value.'
     if (dataType === 'Boolean') return ['true', 'false', '1', '0', 'on', 'off', 'yes', 'no'].includes(trimmed.toLowerCase()) ? '' : 'Target Value must parse as Boolean.'
     if (['Float', 'Double'].includes(dataType)) {
+      const decimalFloatPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
       const parsed = Number(trimmed)
-      return Number.isFinite(parsed) ? '' : `Target Value must parse as ${dataType}.`
+      return decimalFloatPattern.test(trimmed) && Number.isFinite(parsed) ? '' : `Target Value must parse as ${dataType}.`
     }
     if (!/^[+]?\d+$/.test(trimmed) && ['Byte', 'UInt16', 'UInt32', 'UInt64'].includes(dataType)) return `Target Value must be an unsigned plain decimal integer for ${dataType}.`
     if (!/^[+-]?\d+$/.test(trimmed)) return `Target Value must be a plain decimal integer for ${dataType}.`

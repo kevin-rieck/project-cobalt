@@ -11,7 +11,10 @@ import (
 	"github.com/gopcua/opcua/ua"
 )
 
-var plainDecimalIntegerPattern = regexp.MustCompile(`^[+-]?\d+$`)
+var (
+	plainDecimalIntegerPattern = regexp.MustCompile(`^[+-]?\d+$`)
+	decimalFloatPattern        = regexp.MustCompile(`^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$`)
+)
 
 type ScalarValue struct {
 	DataType   string
@@ -95,6 +98,9 @@ func parseUnsignedIntegerScalar[T ~uint8 | ~uint16 | ~uint32 | ~uint64](dataType
 
 func parseFloatScalar(dataType string, target string, bitSize int) (float64, error) {
 	trimmed := strings.TrimSpace(target)
+	if !decimalFloatPattern.MatchString(trimmed) {
+		return 0, fmt.Errorf("invalid %s target value: %q", dataType, target)
+	}
 	value, err := strconv.ParseFloat(trimmed, bitSize)
 	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, fmt.Errorf("invalid %s target value: %q", dataType, target)

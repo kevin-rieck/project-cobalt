@@ -43,7 +43,7 @@ const inspection = {
     UserAccessLevel: 'CurrentRead | CurrentWrite',
     UserAccessLevelAvailable: true,
     Writable: true,
-    WriteAvailability: 'Writable for current user',
+    WriteAvailability: 'Writable in this session',
     ValueRank: 'Scalar',
     ArrayDimensions: '',
     EngineeringUnit: '°C',

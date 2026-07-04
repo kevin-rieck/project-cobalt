@@ -39,6 +39,8 @@ func TestParseScalarValueRejectsUnsupportedAndInvalidValues(t *testing.T) {
 		{dataType: "Int32", target: "1_000"},
 		{dataType: "Int32", target: "1.0"},
 		{dataType: "Byte", target: "256"},
+		{dataType: "Float", target: "0x1p2"},
+		{dataType: "Double", target: "1_000"},
 	}
 	for _, tt := range tests {
 		if _, err := ParseScalarValue(tt.dataType, tt.target); err == nil {

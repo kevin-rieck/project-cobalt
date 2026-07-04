@@ -168,7 +168,7 @@ func (s *InspectionSet) ApplyLiveValue(nodeID string, value opcua.LiveValue, err
 	inspection.Stale = false
 	inspection.OutOfRange = outOfRangeText(value.Value, inspection.Details.EURange)
 	inspection.UpdateCount++
-	if inspection.Watched {
+	if inspection.Watched || s.isObserved(nodeID) {
 		s.appendTrendPoint(inspection.Node, value)
 	}
 	if inspection.Updates == nil {
@@ -277,6 +277,10 @@ func (s *InspectionSet) startRequests(inspection *VariableNodeInspection) []Requ
 		requests = append(requests, Request{Kind: RequestReadDetails, NodeID: inspection.Node.NodeID})
 	}
 	return requests
+}
+
+func (s *InspectionSet) isObserved(nodeID string) bool {
+	return len(s.trends[nodeID]) > 0
 }
 
 func (s *InspectionSet) appendTrendPoint(node opcua.AddressNode, value opcua.LiveValue) {

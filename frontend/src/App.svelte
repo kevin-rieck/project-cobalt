@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, SaveSavedConnection, SearchAddressSpace, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
+  import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, RefreshVariableNodeValue, SaveSavedConnection, SearchAddressSpace, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
   import { getReadmeScreenshotState } from './readmeScreenshots'
 
@@ -168,6 +168,7 @@
   let searchView: AddressSpaceSearchView = (readmeScreenshotState?.searchView as AddressSpaceSearchView) ?? { query: '', results: [], status: 'Connect to an OPC UA Server to search browsed Address Space metadata.' }
   let searching = false
   let searchDebounce: ReturnType<typeof setTimeout> | null = null
+  let refreshingNodeID = ''
 
   $: selectedEndpointInfo = endpoints[selectedEndpoint]
   $: selectedSecurityMode = selectedEndpointInfo?.SecurityMode?.replace('MessageSecurityMode', '').trim() || ''
@@ -500,6 +501,19 @@
       addToast('info', 'Added to Watchlist')
     } catch (error) {
       addToast('error', String(error))
+    }
+  }
+
+  async function refreshInspectionValue() {
+    if (!inspection || refreshingNodeID) return
+    refreshingNodeID = inspection.node.NodeID
+    try {
+      await RefreshVariableNodeValue(inspection.node.NodeID)
+      addToast('info', 'Live Value refreshed')
+    } catch (error) {
+      addToast('error', `Refresh failed: ${String(error)}`)
+    } finally {
+      refreshingNodeID = ''
     }
   }
 
@@ -899,11 +913,14 @@
             <div class="flex items-center justify-between gap-md border-b border-outline-variant p-md">
               <div class="min-w-0"><p class="label">Variable Node Inspection</p><h2 class="truncate text-xl font-semibold">{inspection?.node?.DisplayName ?? 'No Variable Node selected'}</h2></div>
               {#if inspection}
-                {#if inspection.watched}
-                  <button class="btn-secondary shrink-0" on:click={() => removeFromWatchlist(inspection?.node.NodeID || '')}>Remove from Watchlist</button>
-                {:else}
-                  <button class="btn-primary shrink-0" on:click={addSelectedToWatchlist}>Add to Watchlist</button>
-                {/if}
+                <div class="flex shrink-0 items-center gap-sm">
+                  <button class="btn-secondary" on:click={refreshInspectionValue} disabled={refreshingNodeID === inspection.node.NodeID}>{refreshingNodeID === inspection.node.NodeID ? 'Refreshing…' : 'Refresh current value'}</button>
+                  {#if inspection.watched}
+                    <button class="btn-secondary" on:click={() => removeFromWatchlist(inspection?.node.NodeID || '')}>Remove from Watchlist</button>
+                  {:else}
+                    <button class="btn-primary" on:click={addSelectedToWatchlist}>Add to Watchlist</button>
+                  {/if}
+                </div>
               {/if}
             </div>
             <div class="min-h-0 flex-1 overflow-auto p-lg">

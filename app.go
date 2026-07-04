@@ -543,6 +543,35 @@ func (a *App) GetSessionTrend(focusedNodeID string) session.SessionTrendView {
 	return a.inspections.SessionTrend(focusedNodeID)
 }
 
+func (a *App) RefreshVariableNodeValue(nodeID string) error {
+	if strings.TrimSpace(nodeID) == "" {
+		a.mu.Lock()
+		selected, ok := a.inspections.Selected()
+		a.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("no Variable Node selected")
+		}
+		nodeID = selected.Node.NodeID
+	}
+	a.appendLog("info", fmt.Sprintf("Refreshing Live Value for Variable Node %s", nodeID))
+	value, err := a.client.ReadValue(a.ctx, nodeID)
+	a.mu.Lock()
+	requests := a.inspections.ApplyLiveValue(nodeID, value, err)
+	view := a.currentInspectionLocked()
+	rows := a.watchlistLocked()
+	a.mu.Unlock()
+	if err != nil {
+		a.appendLog("error", fmt.Sprintf("Refresh Live Value failed for %s: %v", nodeID, err))
+	}
+	a.emitInspection(view)
+	a.emitWatchlistRows(rows)
+	if err == nil {
+		a.scheduleSessionTrendUpdate()
+	}
+	a.executeInspectionRequests(requests)
+	return err
+}
+
 func (a *App) GetDiagnosticLogs() []DiagnosticLogEntry {
 	a.mu.Lock()
 	defer a.mu.Unlock()

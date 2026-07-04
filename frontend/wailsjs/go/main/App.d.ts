@@ -32,6 +32,8 @@ export function PickClientCertificate():Promise<string>;
 
 export function PickClientPrivateKey():Promise<string>;
 
+export function RefreshVariableNodeValue(arg1:string):Promise<void>;
+
 export function SaveSavedConnection(arg1:main.ConnectionRequest):Promise<connections.SavedConnection>;
 
 export function SearchAddressSpace(arg1:string):Promise<search.AddressSpaceSearchView>;

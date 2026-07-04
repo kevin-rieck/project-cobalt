@@ -21,6 +21,9 @@ type recordingClient struct {
 	browseErrors    map[string]error
 	browseRequests  []string
 	browseTimes     []time.Time
+	readValues      map[string]opcua.LiveValue
+	readValueErrors map[string]error
+	readValueIDs    []string
 }
 
 func (c *recordingClient) DiscoverEndpoints(context.Context, string) ([]opcua.Endpoint, error) {
@@ -66,6 +69,19 @@ func (c *recordingClient) recordedBrowseTimes() []time.Time {
 
 func (c *recordingClient) ReadNodeDetails(context.Context, string) (opcua.NodeDetails, error) {
 	return opcua.NodeDetails{}, nil
+}
+
+func (c *recordingClient) ReadValue(_ context.Context, nodeID string) (opcua.LiveValue, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.readValueIDs = append(c.readValueIDs, nodeID)
+	if err := c.readValueErrors[nodeID]; err != nil {
+		return opcua.LiveValue{}, err
+	}
+	if c.readValues == nil {
+		return opcua.LiveValue{NodeID: nodeID}, nil
+	}
+	return c.readValues[nodeID], nil
 }
 
 func (c *recordingClient) SubscribeValue(context.Context, string) (<-chan opcua.LiveValue, opcua.ValueSubscription, error) {
@@ -319,6 +335,67 @@ func TestExplicitBrowseAddsDiscoveredChildrenToSearchImmediately(t *testing.T) {
 	}
 	if len(view.Results) != 1 || view.Results[0].Node.NodeID != "ns=2;s=ManualTemperature" {
 		t.Fatalf("SearchAddressSpace() = %#v, want explicitly browsed child immediately searchable", view)
+	}
+}
+
+func TestRefreshVariableNodeValueUpdatesSelectedInspectionAndWatchlist(t *testing.T) {
+	node := opcua.AddressNode{NodeID: "ns=2;s=Level", DisplayName: "Tank Level", NodeClass: "Variable"}
+	client := &recordingClient{readValues: map[string]opcua.LiveValue{
+		"ns=2;s=Level": {NodeID: "ns=2;s=Level", Value: "120", Status: "Good"},
+	}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+	app.inspections.Select(node)
+	app.inspections.Watch(node)
+	app.inspections.ApplyLiveValue("ns=2;s=Level", opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "80", Status: "Good"}, nil)
+	app.inspections.ApplyDetails("ns=2;s=Level", opcua.NodeDetails{NodeID: "ns=2;s=Level", EURange: &opcua.ValueRange{Low: 0, High: 100}}, nil)
+
+	if err := app.RefreshVariableNodeValue(""); err != nil {
+		t.Fatalf("RefreshVariableNodeValue() error = %v", err)
+	}
+
+	selected, ok := app.inspections.Selected()
+	if !ok {
+		t.Fatalf("selected inspection missing after refresh")
+	}
+	if selected.Value.Value != "120" || selected.Value.Status != "Good" || selected.Stale || selected.UpdateCount != 2 || selected.OutOfRange != "120 is above 100" || selected.Err != nil {
+		t.Fatalf("selected inspection after refresh = %#v", selected)
+	}
+	rows := app.GetWatchlist()
+	if len(rows) != 1 || rows[0].Value.Value != "120" || rows[0].OutOfRange != "120 is above 100" || rows[0].UpdateCount != 2 {
+		t.Fatalf("watchlist rows after refresh = %#v", rows)
+	}
+	trend := app.GetSessionTrend("ns=2;s=Level")
+	if len(trend.Points) != 2 || trend.Points[0].Value != "120" {
+		t.Fatalf("Session Trend after refresh = %#v, want refreshed value appended for watched node", trend)
+	}
+}
+
+func TestRefreshVariableNodeValueFailureMarksStaleAndRecordsInlineError(t *testing.T) {
+	node := opcua.AddressNode{NodeID: "ns=2;s=Level", DisplayName: "Tank Level", NodeClass: "Variable"}
+	client := &recordingClient{readValueErrors: map[string]error{"ns=2;s=Level": errors.New("read denied")}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+	app.inspections.Select(node)
+	app.inspections.Watch(node)
+	app.inspections.ApplyLiveValue("ns=2;s=Level", opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "80", Status: "Good"}, nil)
+
+	err := app.RefreshVariableNodeValue("ns=2;s=Level")
+	if err == nil || !strings.Contains(err.Error(), "read denied") {
+		t.Fatalf("RefreshVariableNodeValue() error = %v, want read denied", err)
+	}
+
+	selected, _ := app.inspections.Selected()
+	if !selected.Stale || selected.Value.Value != "80" || selected.Err == nil || !strings.Contains(selected.Err.Error(), "read denied") {
+		t.Fatalf("selected inspection after failed refresh = %#v", selected)
+	}
+	rows := app.GetWatchlist()
+	if len(rows) != 1 || !rows[0].Stale || !strings.Contains(rows[0].Error, "read denied") || rows[0].Value.Value != "80" {
+		t.Fatalf("watchlist rows after failed refresh = %#v", rows)
+	}
+	trend := app.GetSessionTrend("ns=2;s=Level")
+	if len(trend.Points) != 1 || trend.Points[0].Value != "80" {
+		t.Fatalf("Session Trend after failed refresh = %#v, want no failed read point appended", trend)
 	}
 }
 

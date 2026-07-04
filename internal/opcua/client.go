@@ -22,6 +22,7 @@ type Client interface {
 	Connect(ctx context.Context, request ConnectRequest) error
 	BrowseChildren(ctx context.Context, nodeID string) ([]AddressNode, error)
 	ReadNodeDetails(ctx context.Context, nodeID string) (NodeDetails, error)
+	ReadValue(ctx context.Context, nodeID string) (LiveValue, error)
 	SubscribeValue(ctx context.Context, nodeID string) (<-chan LiveValue, ValueSubscription, error)
 	Close(ctx context.Context) error
 }
@@ -219,6 +220,24 @@ func (c *gopcuaClient) ReadNodeDetails(ctx context.Context, nodeID string) (Node
 		log.Printf("opcua: ReadNodeDetails properties failed nodeID=%s error=%v", nodeID, err)
 	}
 	return details, nil
+}
+
+func (c *gopcuaClient) ReadValue(ctx context.Context, nodeID string) (LiveValue, error) {
+	if c.client == nil {
+		return LiveValue{}, ua.StatusBadServerNotConnected
+	}
+	parsedNodeID, err := ua.ParseNodeID(nodeID)
+	if err != nil {
+		return LiveValue{}, err
+	}
+	attrs, err := c.client.Node(parsedNodeID).Attributes(ctx, ua.AttributeIDValue)
+	if err != nil {
+		return LiveValue{}, err
+	}
+	if len(attrs) == 0 {
+		return LiveValue{}, fmt.Errorf("read %s failed: no value returned", nodeID)
+	}
+	return liveValueFromDataValue(nodeID, attrs[0]), nil
 }
 
 func (c *gopcuaClient) SubscribeValue(ctx context.Context, nodeID string) (<-chan LiveValue, ValueSubscription, error) {

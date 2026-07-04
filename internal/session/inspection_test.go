@@ -114,6 +114,21 @@ func TestSessionTrendKeepsObservedNodeAfterSubscriptionStops(t *testing.T) {
 	}
 }
 
+func TestSessionTrendRecordsUpdatesForAlreadyObservedVariableNode(t *testing.T) {
+	set := NewInspectionSet()
+	set.Select(variable("ns=2;s=Level"))
+	set.Watch(variable("ns=2;s=Level"))
+	set.ApplyLiveValue("ns=2;s=Level", opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "10", Status: "Good"}, nil)
+	set.Unwatch("ns=2;s=Level")
+
+	set.ApplyLiveValue("ns=2;s=Level", opcua.LiveValue{NodeID: "ns=2;s=Level", Value: "11", Status: "Good"}, nil)
+
+	trend := set.SessionTrend("ns=2;s=Level")
+	if len(trend.Points) != 2 || trend.Points[0].Value != "11" {
+		t.Fatalf("trend after already observed update = %#v, want new point appended", trend)
+	}
+}
+
 func TestSessionTrendRetainsLatestFiveHundredUpdates(t *testing.T) {
 	set := NewInspectionSet()
 	set.Watch(variable("ns=2;s=Level"))

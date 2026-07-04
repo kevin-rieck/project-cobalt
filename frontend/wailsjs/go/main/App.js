@@ -54,6 +54,10 @@ export function PickClientPrivateKey() {
   return window['go']['main']['App']['PickClientPrivateKey']();
 }
 
+export function RefreshVariableNodeValue(arg1) {
+  return window['go']['main']['App']['RefreshVariableNodeValue'](arg1);
+}
+
 export function SaveSavedConnection(arg1) {
   return window['go']['main']['App']['SaveSavedConnection'](arg1);
 }

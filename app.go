@@ -308,12 +308,17 @@ func (a *App) PickClientPrivateKey() (string, error) {
 
 func (a *App) Disconnect() error {
 	a.appendLog("info", "Disconnecting")
-	if err := a.client.Close(a.ctx); err != nil {
-		a.appendLog("error", fmt.Sprintf("Disconnect failed: %v", err))
-		return err
-	}
+
 	a.mu.Lock()
 	a.cancelShallowAddressSpaceIndexingLocked()
+	a.mu.Unlock()
+
+	var closeErr error
+	if closeErr = a.client.Close(a.ctx); closeErr != nil {
+		a.appendLog("error", fmt.Sprintf("Disconnect failed: %v", closeErr))
+	}
+
+	a.mu.Lock()
 	a.client = opcua.NewClient()
 	a.inspections = session.NewInspectionSet()
 	a.addressSpaceSearch.Reset()

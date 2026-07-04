@@ -16,6 +16,7 @@ import (
 type recordingClient struct {
 	mu               sync.Mutex
 	connectErr       error
+	closeErr         error
 	connectRequests  []opcua.ConnectRequest
 	browseChildren   map[string][]opcua.AddressNode
 	browseErrors     map[string]error
@@ -112,7 +113,7 @@ func (c *recordingClient) SubscribeValue(context.Context, string) (<-chan opcua.
 	return nil, nil, nil
 }
 
-func (c *recordingClient) Close(context.Context) error { return nil }
+func (c *recordingClient) Close(context.Context) error { return c.closeErr }
 
 type blockingBrowseClient struct {
 	recordingClient
@@ -233,6 +234,21 @@ func TestSessionSafetyResetsToReadOnlyOnConnectAndDisconnect(t *testing.T) {
 	t.Cleanup(func() { _ = app.Disconnect() })
 	if safety := app.GetSessionSafety(); !safety.Connected || !safety.ReadOnlyMode {
 		t.Fatalf("GetSessionSafety() after reconnect = %#v, want new session Read-Only Mode", safety)
+	}
+}
+
+func TestDisconnectWhenClientCloseFailsStillDisconnectsApp(t *testing.T) {
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	client := &recordingClient{closeErr: errors.New("network timeout")}
+	app.client = client
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+
+	_ = app.Disconnect()
+
+	if safety := app.GetSessionSafety(); safety.Connected {
+		t.Fatalf("GetSessionSafety().Connected = true, want false after Disconnect even if Close failed")
 	}
 }
 

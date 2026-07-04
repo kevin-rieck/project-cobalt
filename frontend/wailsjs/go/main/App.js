@@ -81,3 +81,7 @@ export function UnwatchVariableNode(arg1) {
 export function WatchVariableNode(arg1) {
   return window['go']['main']['App']['WatchVariableNode'](arg1);
 }
+
+export function WriteVariableNodeValue(arg1) {
+  return window['go']['main']['App']['WriteVariableNodeValue'](arg1);
+}

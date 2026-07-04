@@ -14,6 +14,7 @@ OPC UA Studio helps automation engineers run a focused Troubleshooting Session a
 - inspect Variable Nodes with Live Value, status, timestamps, and metadata
 - keep important Variable Nodes in a Watchlist
 - review temporary Session Trend history from observed Live Value updates
+- deliberately write one supported scalar value to one writable Variable Node when Read-Only Mode is disabled
 
 ## Features
 
@@ -27,7 +28,7 @@ Address Space Search finds Search Results from browsed metadata such as `Display
 
 ![Variable Node Inspection](docs/assets/readme/variable-node-inspection.png)
 
-Variable Node Inspection combines the current Live Value with status, timestamps, engineering unit, range metadata, stale state, and out-of-range state.
+Variable Node Inspection combines the current Live Value with status, timestamps, engineering unit, range metadata, stale state, and out-of-range state. OPC UA Studio starts each session in Read-Only Mode. After explicitly allowing writes for the connected session, Variable Node Write can change one supported scalar value on one writable Variable Node from the inspection view, requires confirmation, and refreshes the current value with a read-back result.
 
 ### Keep a troubleshooting Watchlist
 

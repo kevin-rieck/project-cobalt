@@ -45,3 +45,5 @@ export function SetReadOnlyMode(arg1:boolean):Promise<void>;
 export function UnwatchVariableNode(arg1:string):Promise<void>;
 
 export function WatchVariableNode(arg1:opcua.AddressNode):Promise<void>;
+
+export function WriteVariableNodeValue(arg1:main.VariableNodeWriteRequest):Promise<main.VariableNodeWriteResult>;

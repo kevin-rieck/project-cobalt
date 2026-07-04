@@ -39,11 +39,11 @@ const inspection = {
     NodeID: nodes.temp.NodeID,
     Description: 'Temperature at filler bowl outlet',
     DataType: 'Double',
-    AccessLevel: 'CurrentRead',
-    UserAccessLevel: 'CurrentRead',
+    AccessLevel: 'CurrentRead | CurrentWrite',
+    UserAccessLevel: 'CurrentRead | CurrentWrite',
     UserAccessLevelAvailable: true,
-    Writable: false,
-    WriteAvailability: 'Read-only in this session',
+    Writable: true,
+    WriteAvailability: 'Writable for current user',
     ValueRank: 'Scalar',
     ArrayDimensions: '',
     EngineeringUnit: '°C',
@@ -94,6 +94,7 @@ const sessionTrend = {
 export type ReadmeScreenshotState = {
   activeTab: Tab
   connected: boolean
+  readOnlyMode: boolean
   currentConnection: string
   tree: typeof tree
   selectedNodeID: string
@@ -132,6 +133,7 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
   return {
     activeTab: tabByRequest[requested] || 'address-space',
     connected: true,
+    readOnlyMode: true,
     currentConnection: 'Control Gateway',
     tree,
     selectedNodeID: nodes.temp.NodeID,

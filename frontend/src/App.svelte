@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionSafety, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, RefreshVariableNodeValue, SaveSavedConnection, SearchAddressSpace, SetReadOnlyMode, UnwatchVariableNode, WatchVariableNode } from '../wailsjs/go/main/App.js'
+  import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionSafety, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, RefreshVariableNodeValue, SaveSavedConnection, SearchAddressSpace, SetReadOnlyMode, UnwatchVariableNode, WatchVariableNode, WriteVariableNodeValue } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
   import { getReadmeScreenshotState } from './readmeScreenshots'
 
@@ -111,6 +111,23 @@
   type DiagnosticLogEntry = { timestamp: string; level: string; message: string }
   type SessionSafety = { connected: boolean; readOnlyMode: boolean }
 
+  type VariableNodeWriteResult = {
+    nodeID: string
+    targetValue: string
+    status: string
+    readBack: { Value: string; Status: string; SourceTimestamp: string; ServerTimestamp: string }
+    warning: string
+  }
+
+  type WriteConfirmationSnapshot = {
+    nodeID: string
+    updateCount: number
+    value: string
+    status: string
+    sourceTimestamp: string
+    serverTimestamp: string
+  }
+
   type SavedConnection = {
     id: string
     name: string
@@ -152,7 +169,7 @@
   let discovering = false
   let connecting = false
   let connected = readmeScreenshotState?.connected ?? false
-  let readOnlyMode = true
+  let readOnlyMode = readmeScreenshotState?.readOnlyMode ?? true
   let connectionError = ''
   let currentConnection = readmeScreenshotState?.currentConnection ?? ''
   let savedConnections: SavedConnection[] = (readmeScreenshotState?.savedConnections as SavedConnection[]) ?? []
@@ -174,6 +191,12 @@
   let searching = false
   let searchDebounce: ReturnType<typeof setTimeout> | null = null
   let refreshingNodeID = ''
+  let writeTargetValue = ''
+  let writeSubmitting = false
+  let writeResult: VariableNodeWriteResult | null = null
+  let writeError = ''
+  let writeConfirmOpen = false
+  let writeConfirmationSnapshot: WriteConfirmationSnapshot | null = null
 
   $: selectedEndpointInfo = endpoints[selectedEndpoint]
   $: selectedSecurityMode = selectedEndpointInfo?.SecurityMode?.replace('MessageSecurityMode', '').trim() || ''
@@ -185,6 +208,11 @@
   $: savingRequiresName = saveConnectionOnConnect && connectionName.trim().length === 0
   $: canConnect = !!selectedEndpointInfo && !connecting && !savingConnection && !savingRequiresName && (!passwordRequired || !!password) && (!selectedEndpointIsSecure || (!!clientCertificatePath && !!clientPrivateKeyPath))
   $: visibleTree = tree.filter((_, index) => !isHidden(index))
+  $: writeDisabledReasons = variableNodeWriteDisabledReasons(inspection, connected, readOnlyMode, writeTargetValue)
+  $: canOpenWriteConfirmation = !!inspection && writeDisabledReasons.length === 0 && !writeSubmitting
+  $: writeConfirmationInvalidated = isWriteConfirmationInvalidated(inspection, writeConfirmationSnapshot)
+  $: writeRangeWarning = writeTargetRangeWarning(inspection, writeTargetValue)
+  $: writeStatusWarning = inspection && !inspection.stale && inspection.value?.Status && !inspection.value.Status.includes('Good') ? `Current status is ${inspection.value.Status}; confirm the value is safe to change.` : ''
 
   onMount(async () => {
     if (readmeScreenshotState) return
@@ -196,7 +224,9 @@
     watchlist = await GetWatchlist()
     sessionTrend = await GetSessionTrend(focusedTrendNodeID)
     const offInspection = EventsOn('variable-inspection-updated', (payload: Inspection | null) => {
+      const previousNodeID = inspection?.node?.NodeID || ''
       inspection = payload
+      if (previousNodeID && payload?.node?.NodeID !== previousNodeID) resetWriteState()
     })
     const offWatchlist = EventsOn('watchlist-updated', (payload: WatchlistRow[]) => {
       watchlist = payload || []
@@ -545,6 +575,117 @@
     } finally {
       refreshingNodeID = ''
     }
+  }
+
+  function resetWriteState() {
+    writeTargetValue = ''
+    writeSubmitting = false
+    writeResult = null
+    writeError = ''
+    writeConfirmOpen = false
+    writeConfirmationSnapshot = null
+  }
+
+  function openWriteConfirmation() {
+    if (!inspection || !canOpenWriteConfirmation) return
+    writeError = ''
+    writeResult = null
+    writeConfirmationSnapshot = {
+      nodeID: inspection.node.NodeID,
+      updateCount: inspection.updateCount,
+      value: inspection.value?.Value || '',
+      status: inspection.value?.Status || '',
+      sourceTimestamp: inspection.value?.SourceTimestamp || '',
+      serverTimestamp: inspection.value?.ServerTimestamp || ''
+    }
+    writeConfirmOpen = true
+  }
+
+  function closeWriteConfirmation() {
+    writeConfirmOpen = false
+    writeConfirmationSnapshot = null
+  }
+
+  async function confirmVariableNodeWrite() {
+    if (!inspection || !writeConfirmationSnapshot || writeConfirmationInvalidated || writeSubmitting) return
+    writeSubmitting = true
+    writeError = ''
+    writeResult = null
+    try {
+      const result = await WriteVariableNodeValue({ nodeID: inspection.node.NodeID, targetValue: writeTargetValue })
+      writeResult = result
+      writeConfirmOpen = false
+      writeConfirmationSnapshot = null
+      writeTargetValue = ''
+      if (result.status === 'warning') {
+        addToast('info', `Variable Node Write accepted with warning: ${result.warning}`)
+      } else {
+        addToast('info', 'Variable Node Write accepted')
+      }
+    } catch (error) {
+      writeError = String(error)
+      addToast('error', `Variable Node Write failed: ${String(error)}`)
+    } finally {
+      writeSubmitting = false
+    }
+  }
+
+  function variableNodeWriteDisabledReasons(current: Inspection | null, isConnected: boolean, isReadOnly: boolean, target: string) {
+    const reasons: string[] = []
+    if (!isConnected) reasons.push('Connect to an OPC UA Server before writing.')
+    if (isReadOnly) reasons.push('Read-Only Mode is active.')
+    if (!current) return [...reasons, 'Select a Variable Node in Variable Node Inspection.']
+    if (current.node.NodeClass !== 'Variable') reasons.push('Selected node is not a Variable Node.')
+    if (current.loadingDetails) reasons.push('Waiting for Variable Node metadata.')
+    if (current.detailsError) reasons.push(`Details failed to load: ${current.detailsError}`)
+    if (!current.details?.NodeID) reasons.push('Write availability cannot be determined until metadata loads.')
+    if (current.details?.ValueRank && current.details.ValueRank !== 'Scalar') reasons.push(`Only scalar Variable Node Writes are supported; ValueRank is ${current.details.ValueRank}.`)
+    if (current.details?.NodeID && !current.details.Writable) reasons.push(current.details.WriteAvailability || 'Effective metadata says this Variable Node is not writable in this session.')
+    if (current.details?.DataType && !isSupportedWriteDataType(current.details.DataType)) reasons.push(`Data type ${current.details.DataType} is not supported for Variable Node Write.`)
+    if (!current.details?.DataType) reasons.push('Data type is unavailable.')
+    if (current.stale || current.error || current.updateCount === 0) reasons.push('Current Live Value is stale or unavailable.')
+    const parseError = parseWriteTargetError(current.details?.DataType || '', target)
+    if (parseError) reasons.push(parseError)
+    return reasons
+  }
+
+  function isSupportedWriteDataType(dataType: string) {
+    return ['Boolean', 'SByte', 'Int16', 'Int32', 'Int64', 'Byte', 'UInt16', 'UInt32', 'UInt64', 'Float', 'Double', 'String'].includes(dataType.trim())
+  }
+
+  function parseWriteTargetError(dataType: string, target: string) {
+    const trimmed = target.trim()
+    if (!trimmed) return 'Enter a Target Value.'
+    if (!dataType || !isSupportedWriteDataType(dataType)) return ''
+    if (dataType === 'String') return ''
+    if (dataType === 'Boolean') return ['true', 'false', '1', '0', 'on', 'off', 'yes', 'no'].includes(trimmed.toLowerCase()) ? '' : 'Target Value must parse as Boolean.'
+    if (['Float', 'Double'].includes(dataType)) {
+      const parsed = Number(trimmed)
+      return Number.isFinite(parsed) ? '' : `Target Value must parse as ${dataType}.`
+    }
+    if (!/^[+]?\d+$/.test(trimmed) && ['Byte', 'UInt16', 'UInt32', 'UInt64'].includes(dataType)) return `Target Value must be an unsigned plain decimal integer for ${dataType}.`
+    if (!/^[+-]?\d+$/.test(trimmed)) return `Target Value must be a plain decimal integer for ${dataType}.`
+    const value = BigInt(trimmed)
+    const ranges: Record<string, [bigint, bigint]> = {
+      SByte: [BigInt('-128'), BigInt('127')], Int16: [BigInt('-32768'), BigInt('32767')], Int32: [BigInt('-2147483648'), BigInt('2147483647')], Int64: [BigInt('-9223372036854775808'), BigInt('9223372036854775807')],
+      Byte: [BigInt('0'), BigInt('255')], UInt16: [BigInt('0'), BigInt('65535')], UInt32: [BigInt('0'), BigInt('4294967295')], UInt64: [BigInt('0'), BigInt('18446744073709551615')]
+    }
+    const [min, max] = ranges[dataType]
+    return value < min || value > max ? `Target Value is outside ${dataType} range.` : ''
+  }
+
+  function writeTargetRangeWarning(current: Inspection | null, target: string) {
+    if (!current?.details?.EURange || !target.trim()) return ''
+    const numeric = Number(target)
+    if (!Number.isFinite(numeric)) return ''
+    if (numeric < current.details.EURange.Low) return `Target Value is below EURange (${current.details.EURange.Low}–${current.details.EURange.High}); this warns but does not block.`
+    if (numeric > current.details.EURange.High) return `Target Value is above EURange (${current.details.EURange.Low}–${current.details.EURange.High}); this warns but does not block.`
+    return ''
+  }
+
+  function isWriteConfirmationInvalidated(current: Inspection | null, snapshot: WriteConfirmationSnapshot | null) {
+    if (!current || !snapshot) return false
+    return current.node.NodeID !== snapshot.nodeID || current.updateCount !== snapshot.updateCount || current.value?.Value !== snapshot.value || current.value?.Status !== snapshot.status || current.value?.SourceTimestamp !== snapshot.sourceTimestamp || current.value?.ServerTimestamp !== snapshot.serverTimestamp
   }
 
   async function removeFromWatchlist(nodeID: string) {
@@ -970,6 +1111,38 @@
                   <p class="label">Effective Write Availability</p>
                   <p class="mt-xs text-lg font-semibold {inspection.details?.Writable ? 'text-primary' : 'text-on-surface'}">{inspection.details?.WriteAvailability || 'Write availability not confirmed for this user'}</p>
                 </div>
+                <div class="mt-md rounded border border-outline-variant bg-surface-container-low p-md">
+                  <div class="flex items-start justify-between gap-md">
+                    <div>
+                      <p class="label">Variable Node Write</p>
+                      <h3 class="mt-xs text-lg font-semibold">Write value</h3>
+                      <p class="mt-xs text-sm text-on-surface-variant">Available only from Variable Node Inspection. Every write requires confirmation and cannot be submitted with Enter.</p>
+                    </div>
+                    <span class="rounded px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Writes Allowed'}</span>
+                  </div>
+                  <div class="mt-md grid gap-sm lg:grid-cols-[1fr_auto]">
+                    <label class="space-y-xs">
+                      <span class="label">Target Value</span>
+                      <input class="field w-full" bind:value={writeTargetValue} on:keydown={(event) => event.key === 'Enter' && event.preventDefault()} placeholder={inspection.details?.DataType ? `Enter ${inspection.details.DataType}` : 'Waiting for data type'} />
+                    </label>
+                    <div class="flex items-end">
+                      <button class="btn-primary h-9" disabled={!canOpenWriteConfirmation} on:click={openWriteConfirmation}>{writeSubmitting ? 'Writing…' : 'Write value'}</button>
+                    </div>
+                  </div>
+                  {#if writeDisabledReasons.length > 0}
+                    <ul class="mt-md list-disc space-y-xs pl-lg text-sm text-on-surface-variant">
+                      {#each writeDisabledReasons as reason}<li>{reason}</li>{/each}
+                    </ul>
+                  {/if}
+                  {#if writeRangeWarning}<div class="mt-md rounded border border-tertiary-container bg-tertiary-container/10 p-sm text-sm text-tertiary">{writeRangeWarning}</div>{/if}
+                  {#if writeStatusWarning}<div class="mt-md rounded border border-tertiary-container bg-tertiary-container/10 p-sm text-sm text-tertiary">{writeStatusWarning}</div>{/if}
+                  {#if writeError}<div class="mt-md rounded border border-error-container bg-error-container/20 p-sm text-sm text-error">{writeError}</div>{/if}
+                  {#if writeResult}
+                    <div class="mt-md rounded border {writeResult.status === 'warning' ? 'border-tertiary-container bg-tertiary-container/10 text-tertiary' : 'border-primary/50 bg-primary/10 text-on-surface'} p-sm text-sm">
+                      {#if writeResult.status === 'warning'}{writeResult.warning}{:else}Write accepted. Read-back: {writeResult.readBack?.Value} ({writeResult.readBack?.Status}){/if}
+                    </div>
+                  {/if}
+                </div>
                 {#if inspection.outOfRange}<div class="mt-md rounded border border-tertiary-container bg-tertiary-container/10 p-md text-tertiary">Out-of-Range: {inspection.outOfRange}</div>{/if}
                 {#if inspection.error}<div class="mt-md rounded border border-error-container bg-error-container/20 p-md text-error">{inspection.error}</div>{/if}
                 <div class="mt-lg grid gap-md lg:grid-cols-2">
@@ -1138,6 +1311,41 @@
       {/if}
     </main>
   </div>
+
+  {#if writeConfirmOpen && inspection && writeConfirmationSnapshot}
+    <div class="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-lg">
+      <div class="w-full max-w-2xl rounded-lg border border-outline-variant bg-surface p-lg shadow-2xl">
+        <div class="flex items-start justify-between gap-md">
+          <div>
+            <p class="label">Confirm Variable Node Write</p>
+            <h2 class="mt-xs text-2xl font-semibold">This changes the OPC UA Server</h2>
+            <p class="mt-sm text-sm text-on-surface-variant">Review the current Live Value and Target Value. If the Live Value changes while this confirmation is open, confirmation is invalidated.</p>
+          </div>
+          <button class="rounded p-xs hover:bg-surface-container-high" on:click={closeWriteConfirmation} title="Cancel"><span class="material-symbols-outlined">close</span></button>
+        </div>
+        <dl class="mt-lg grid gap-sm text-sm sm:grid-cols-2">
+          <div class="rounded border border-outline-variant bg-surface-container-low p-sm"><dt class="label">Saved Connection / Endpoint</dt><dd class="mt-xs break-all font-mono">{currentConnection || endpointText || 'Current session'}</dd></div>
+          <div class="rounded border border-outline-variant bg-surface-container-low p-sm"><dt class="label">Variable Node</dt><dd class="mt-xs font-semibold">{inspection.node.DisplayName}</dd></div>
+          <div class="rounded border border-outline-variant bg-surface-container-low p-sm sm:col-span-2"><dt class="label">NodeID</dt><dd class="mt-xs break-all font-mono">{inspection.node.NodeID}</dd></div>
+          <div class="rounded border border-outline-variant bg-surface-container-low p-sm"><dt class="label">Current Live Value</dt><dd class="mt-xs font-mono text-primary">{writeConfirmationSnapshot.value || '—'}</dd></div>
+          <div class="rounded border border-outline-variant bg-surface-container-low p-sm"><dt class="label">Current Status</dt><dd class="mt-xs font-mono">{writeConfirmationSnapshot.status || '—'}</dd></div>
+          <div class="rounded border border-outline-variant bg-surface-container-low p-sm"><dt class="label">Target Value</dt><dd class="mt-xs font-mono text-tertiary">{writeTargetValue}</dd></div>
+          <div class="rounded border border-outline-variant bg-surface-container-low p-sm"><dt class="label">Data Type</dt><dd class="mt-xs font-mono">{inspection.details?.DataType || '—'}</dd></div>
+          <div class="rounded border border-outline-variant bg-surface-container-low p-sm"><dt class="label">Source Timestamp</dt><dd class="mt-xs font-mono">{compactDateTime(writeConfirmationSnapshot.sourceTimestamp)}</dd></div>
+          <div class="rounded border border-outline-variant bg-surface-container-low p-sm"><dt class="label">Server Timestamp</dt><dd class="mt-xs font-mono">{compactDateTime(writeConfirmationSnapshot.serverTimestamp)}</dd></div>
+        </dl>
+        {#if writeConfirmationInvalidated}
+          <div class="mt-md rounded border border-error-container bg-error-container/20 p-md text-error">Current Live Value changed while confirmation was open. Cancel and review the new value before writing.</div>
+        {/if}
+        {#if writeRangeWarning}<div class="mt-md rounded border border-tertiary-container bg-tertiary-container/10 p-md text-tertiary">{writeRangeWarning}</div>{/if}
+        {#if writeStatusWarning}<div class="mt-md rounded border border-tertiary-container bg-tertiary-container/10 p-md text-tertiary">{writeStatusWarning}</div>{/if}
+        <div class="mt-lg flex justify-end gap-sm">
+          <button class="btn-secondary" on:click={closeWriteConfirmation}>Cancel</button>
+          <button class="btn-primary" disabled={writeConfirmationInvalidated || writeSubmitting} on:click={confirmVariableNodeWrite}>{writeSubmitting ? 'Writing…' : 'Confirm write'}</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <div class="pointer-events-none fixed right-md top-md z-50 space-y-sm">
     {#each toasts as toast}

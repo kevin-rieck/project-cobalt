@@ -84,6 +84,10 @@ _Avoid_: Monitoring session, dashboard, commissioning workflow
 The focused view of one Variable Node during a Troubleshooting Session, combining its Live Value, metadata, health, stale state, and out-of-range status.
 _Avoid_: selected value panel, node details workflow
 
+**Variable Node Write**:
+A deliberate change to the value of one writable Variable Node on an OPC UA Server.
+_Avoid_: edit tag, update point, set field
+
 **Watchlist**:
 A user-selected set of Variable Nodes whose Live Values remain readily available during a Troubleshooting Session.
 _Avoid_: Dashboard, monitor, pinned nodes, Live Monitor, Live View

@@ -55,7 +55,10 @@
       Description: string
       DataType: string
       AccessLevel: string
+      UserAccessLevel: string
+      UserAccessLevelAvailable: boolean
       Writable: boolean
+      WriteAvailability: string
       ValueRank: string
       ArrayDimensions: string
       EngineeringUnit: string
@@ -963,6 +966,10 @@
                   <div class="panel bg-surface-container-low p-md"><p class="label">Status</p><p class="mt-sm font-mono text-sm {inspection.stale ? 'text-tertiary' : 'text-emerald-400'}">{inspection.stale ? 'Stale' : inspection.value?.Status || 'Waiting'}</p></div>
                   <div class="panel bg-surface-container-low p-md"><p class="label">Updates</p><p class="mt-sm font-mono text-2xl">{inspection.updateCount}</p></div>
                 </div>
+                <div class="mt-md rounded border border-outline-variant bg-surface-container-low p-md">
+                  <p class="label">Effective Write Availability</p>
+                  <p class="mt-xs text-lg font-semibold {inspection.details?.Writable ? 'text-primary' : 'text-on-surface'}">{inspection.details?.WriteAvailability || 'Write availability not confirmed for this user'}</p>
+                </div>
                 {#if inspection.outOfRange}<div class="mt-md rounded border border-tertiary-container bg-tertiary-container/10 p-md text-tertiary">Out-of-Range: {inspection.outOfRange}</div>{/if}
                 {#if inspection.error}<div class="mt-md rounded border border-error-container bg-error-container/20 p-md text-error">{inspection.error}</div>{/if}
                 <div class="mt-lg grid gap-md lg:grid-cols-2">
@@ -972,7 +979,8 @@
                       <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">NodeId</dt><dd class="font-mono">{inspection.node.NodeID}</dd></div>
                       <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">BrowseName</dt><dd class="font-mono">{inspection.node.BrowseName}</dd></div>
                       <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Data Type</dt><dd>{inspection.details?.DataType || '—'}</dd></div>
-                      <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Access</dt><dd>{inspection.details?.AccessLevel || '—'}</dd></div>
+                      <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">AccessLevel</dt><dd>{inspection.details?.AccessLevel || '—'}</dd></div>
+                      <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">UserAccessLevel</dt><dd>{inspection.details?.UserAccessLevelAvailable ? inspection.details.UserAccessLevel : '—'}</dd></div>
                       <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Engineering Unit</dt><dd>{inspection.details?.EngineeringUnit || '—'}</dd></div>
                     </dl>
                   </div>

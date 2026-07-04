@@ -77,16 +77,19 @@ type ValueRange struct {
 }
 
 type NodeDetails struct {
-	NodeID          string
-	Description     string
-	DataType        string
-	AccessLevel     string
-	Writable        bool
-	ValueRank       string
-	ArrayDimensions string
-	EngineeringUnit string
-	EURange         *ValueRange
-	InstrumentRange *ValueRange
+	NodeID                   string
+	Description              string
+	DataType                 string
+	AccessLevel              string
+	UserAccessLevel          string
+	UserAccessLevelAvailable bool
+	Writable                 bool
+	WriteAvailability        string
+	ValueRank                string
+	ArrayDimensions          string
+	EngineeringUnit          string
+	EURange                  *ValueRange
+	InstrumentRange          *ValueRange
 }
 
 type AuthType string
@@ -211,6 +214,7 @@ func (c *gopcuaClient) ReadNodeDetails(ctx context.Context, nodeID string) (Node
 		ua.AttributeIDDataType,
 		ua.AttributeIDValueRank,
 		ua.AttributeIDArrayDimensions,
+		ua.AttributeIDUserAccessLevel,
 	)
 	if err != nil {
 		return NodeDetails{}, err
@@ -316,9 +320,10 @@ func applyNodeDetailAttributes(details *NodeDetails, attrs []*ua.DataValue) {
 		details.Description = localizedTextValue(attrs[0].Value.Value())
 	}
 	if attrs[1] != nil && attrs[1].Status == ua.StatusOK && attrs[1].Value != nil {
-		access := ua.AccessLevelType(attrs[1].Value.Int())
+		access := accessLevelFromValue(attrs[1].Value.Value())
 		details.AccessLevel = accessLevelText(access)
 		details.Writable = access&ua.AccessLevelTypeCurrentWrite == ua.AccessLevelTypeCurrentWrite
+		details.WriteAvailability = fallbackWriteAvailabilityText(details.Writable)
 	}
 	if attrs[2] != nil && attrs[2].Status == ua.StatusOK && attrs[2].Value != nil {
 		details.DataType = dataTypeName(attrs[2].Value.NodeID())
@@ -328,6 +333,13 @@ func applyNodeDetailAttributes(details *NodeDetails, attrs []*ua.DataValue) {
 	}
 	if attrs[4] != nil && attrs[4].Status == ua.StatusOK && attrs[4].Value != nil {
 		details.ArrayDimensions = fmt.Sprint(attrs[4].Value.Value())
+	}
+	if len(attrs) > 5 && attrs[5] != nil && attrs[5].Status == ua.StatusOK && attrs[5].Value != nil {
+		userAccess := accessLevelFromValue(attrs[5].Value.Value())
+		details.UserAccessLevel = accessLevelText(userAccess)
+		details.UserAccessLevelAvailable = true
+		details.Writable = userAccess&ua.AccessLevelTypeCurrentWrite == ua.AccessLevelTypeCurrentWrite
+		details.WriteAvailability = sessionWriteAvailabilityText(details.Writable)
 	}
 }
 
@@ -419,6 +431,45 @@ func localizedTextValue(value any) string {
 	default:
 		return fmt.Sprint(value)
 	}
+}
+
+func accessLevelFromValue(value any) ua.AccessLevelType {
+	switch v := value.(type) {
+	case byte:
+		return ua.AccessLevelType(v)
+	case uint16:
+		return ua.AccessLevelType(v)
+	case uint32:
+		return ua.AccessLevelType(v)
+	case uint64:
+		return ua.AccessLevelType(v)
+	case int:
+		return ua.AccessLevelType(v)
+	case int8:
+		return ua.AccessLevelType(v)
+	case int16:
+		return ua.AccessLevelType(v)
+	case int32:
+		return ua.AccessLevelType(v)
+	case int64:
+		return ua.AccessLevelType(v)
+	default:
+		return ua.AccessLevelTypeNone
+	}
+}
+
+func sessionWriteAvailabilityText(writable bool) string {
+	if writable {
+		return "Writable in this session"
+	}
+	return "Read-only in this session"
+}
+
+func fallbackWriteAvailabilityText(writable bool) string {
+	if writable {
+		return "Write availability not confirmed for this user"
+	}
+	return "Read-only in this session"
 }
 
 func accessLevelText(access ua.AccessLevelType) string {

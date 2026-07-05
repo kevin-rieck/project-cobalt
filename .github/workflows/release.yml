@@ -18,13 +18,16 @@ jobs:
         include:
           - name: linux-amd64
             runner: ubuntu-22.04
+            platform: linux/amd64
             asset_name: opcua-studio-linux-amd64
           - name: windows-amd64
             runner: windows-latest
+            platform: windows/amd64
             asset_name: opcua-studio-windows-amd64.exe
-          - name: darwin-amd64
-            runner: macos-13
-            asset_name: opcua-studio-darwin-amd64.zip
+          - name: darwin-universal
+            runner: macos-latest
+            platform: darwin/universal
+            asset_name: opcua-studio-darwin-universal.zip
     steps:
       - uses: actions/checkout@v4
 
@@ -49,7 +52,7 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
       - name: Build app
-        run: wails build
+        run: wails build -platform ${{ matrix.platform }}
 
       - name: Stage release asset
         shell: bash

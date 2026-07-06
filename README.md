@@ -83,3 +83,7 @@ This writes images to `docs/assets/readme/`.
 
 - [`CONTEXT.md`](./CONTEXT.md) — project language and domain model
 - [`docs/adr`](./docs/adr) — architectural decisions
+
+## License
+
+Apache License 2.0. See [`LICENSE`](./LICENSE).

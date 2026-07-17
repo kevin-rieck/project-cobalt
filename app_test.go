@@ -121,6 +121,22 @@ type blockingBrowseClient struct {
 	release chan struct{}
 }
 
+type blockingCloseClient struct {
+	recordingClient
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingCloseClient) Close(context.Context) error {
+	select {
+	case <-c.started:
+	default:
+		close(c.started)
+	}
+	<-c.release
+	return nil
+}
+
 func (c *blockingBrowseClient) BrowseChildren(context.Context, string) ([]opcua.AddressNode, error) {
 	select {
 	case <-c.started:
@@ -250,6 +266,37 @@ func TestDisconnectWhenClientCloseFailsStillDisconnectsApp(t *testing.T) {
 	if safety := app.GetSessionSafety(); safety.Connected {
 		t.Fatalf("GetSessionSafety().Connected = true, want false after Disconnect even if Close failed")
 	}
+}
+
+func TestDisconnectReturnsWhenClientCloseBlocks(t *testing.T) {
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.disconnectCloseTimeout = 10 * time.Millisecond
+	client := &blockingCloseClient{started: make(chan struct{}), release: make(chan struct{})}
+	app.client = client
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- app.Disconnect() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Disconnect() error = %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Disconnect() hung waiting for client Close")
+	}
+	select {
+	case <-client.started:
+	default:
+		t.Fatal("Disconnect() did not attempt to close the previous OPC UA client")
+	}
+	if safety := app.GetSessionSafety(); safety.Connected {
+		t.Fatalf("GetSessionSafety().Connected = true, want false after Disconnect even if Close blocks")
+	}
+	close(client.release)
 }
 
 func TestReenablingReadOnlyModeRecordsDiagnosticLog(t *testing.T) {

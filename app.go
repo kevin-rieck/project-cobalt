@@ -23,6 +23,7 @@ const (
 	eventSessionSafetyUpdated         = "session-safety-updated"
 	defaultShallowIndexBrowseInterval = time.Second
 	defaultShallowIndexBrowseBudget   = 250
+	defaultDisconnectCloseTimeout     = 2 * time.Second
 )
 
 // App is the Wails backend boundary for OPC UA Studio.
@@ -44,6 +45,7 @@ type App struct {
 	shallowIndexBrowseInterval  time.Duration
 	shallowIndexBrowseBudget    int
 	shallowIndexBudgetExhausted bool
+	disconnectCloseTimeout      time.Duration
 }
 
 // NewApp creates a new App application struct.
@@ -52,7 +54,7 @@ func NewApp() *App {
 }
 
 func NewAppWithSavedConnectionStore(path string) *App {
-	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, readOnlyMode: true, shallowIndexBrowseInterval: defaultShallowIndexBrowseInterval, shallowIndexBrowseBudget: defaultShallowIndexBrowseBudget}
+	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, readOnlyMode: true, shallowIndexBrowseInterval: defaultShallowIndexBrowseInterval, shallowIndexBrowseBudget: defaultShallowIndexBrowseBudget, disconnectCloseTimeout: defaultDisconnectCloseTimeout}
 }
 
 // startup is called when the app starts. The context is saved so we can emit runtime events.
@@ -311,14 +313,7 @@ func (a *App) Disconnect() error {
 
 	a.mu.Lock()
 	a.cancelShallowAddressSpaceIndexingLocked()
-	a.mu.Unlock()
-
-	var closeErr error
-	if closeErr = a.client.Close(a.ctx); closeErr != nil {
-		a.appendLog("error", fmt.Sprintf("Disconnect failed: %v", closeErr))
-	}
-
-	a.mu.Lock()
+	clientToClose := a.client
 	a.client = opcua.NewClient()
 	a.inspections = session.NewInspectionSet()
 	a.addressSpaceSearch.Reset()
@@ -327,12 +322,39 @@ func (a *App) Disconnect() error {
 	a.readOnlyMode = true
 	safety := a.sessionSafetyLocked()
 	a.mu.Unlock()
+
 	a.emitSessionSafetyUpdated(safety)
 	a.emitInspection(nil)
 	a.emitWatchlist()
 	a.emitSessionTrendUpdated()
+
+	if closeErr := a.closeClientForDisconnect(clientToClose); closeErr != nil {
+		a.appendLog("error", fmt.Sprintf("Disconnect failed: %v", closeErr))
+	}
 	a.appendLog("info", "Disconnected")
 	return nil
+}
+
+func (a *App) closeClientForDisconnect(client opcua.Client) error {
+	closeTimeout := a.disconnectCloseTimeout
+	if closeTimeout <= 0 {
+		closeTimeout = defaultDisconnectCloseTimeout
+	}
+	closeBase := a.ctx
+	if closeBase == nil {
+		closeBase = context.Background()
+	}
+	closeCtx, cancelClose := context.WithTimeout(closeBase, closeTimeout)
+	defer cancelClose()
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- client.Close(closeCtx) }()
+	select {
+	case err := <-closeDone:
+		return err
+	case <-closeCtx.Done():
+		return fmt.Errorf("timed out closing OPC UA client after %s", closeTimeout)
+	}
 }
 
 func (a *App) startShallowAddressSpaceIndexingLocked() {

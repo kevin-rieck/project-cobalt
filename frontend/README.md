@@ -1,14 +1,24 @@
 # OPC UA Studio frontend
 
-## Automated UI tests
+## Frontend validation
 
-Run the Playwright suite from the repository root:
+Run the same dependency install, audit, typecheck, automated UI tests, and build used by CI from the repository root:
+
+```sh
+npm --prefix frontend run ci
+```
+
+The command installs the required Playwright Chromium browser before running the UI suite and stops immediately if any check fails.
+
+To run only the automated UI tests:
 
 ```sh
 npm --prefix frontend run test:ui
 ```
 
-Playwright starts Vite on an isolated local port, loads deterministic frontend state, and shuts the server down after the suite. The tests do not require a live OPC UA Server. Install Chromium once on a new development or CI environment with `npx --prefix frontend playwright install chromium`.
+Playwright starts Vite on an isolated local port, loads deterministic frontend state, and shuts the server down after the suite. The tests do not require a live OPC UA Server.
+
+README screenshot generation is intentionally separate from validation and only runs when explicitly requested with `npm --prefix frontend run screenshots:readme`.
 
 ## Svelte + TS + Vite
 

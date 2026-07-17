@@ -60,6 +60,35 @@ const inspection = {
   detailsError: ''
 }
 
+function inspectionForRequest(requested: string): typeof inspection {
+  switch (requested) {
+    case 'write-metadata-failed':
+      return {
+        ...inspection,
+        details: { ...inspection.details, NodeID: '', DataType: '' },
+        detailsError: 'BadAttributeIdInvalid'
+      }
+    case 'write-live-value-stale':
+      return { ...inspection, stale: true }
+    case 'write-data-type-unsupported':
+      return { ...inspection, details: { ...inspection.details, DataType: 'DateTime' } }
+    case 'write-value-rank-non-scalar':
+      return { ...inspection, details: { ...inspection.details, ValueRank: 'OneDimension' } }
+    case 'write-metadata-non-writable':
+      return {
+        ...inspection,
+        details: {
+          ...inspection.details,
+          UserAccessLevel: 'CurrentRead',
+          Writable: false,
+          WriteAvailability: 'Read-only in this session'
+        }
+      }
+    default:
+      return inspection
+  }
+}
+
 const watchlist = [
   { node: nodes.temp, value: { Value: '83.7', Status: 'Good', SourceTimestamp: now, ServerTimestamp: now }, dataType: 'Double', engineeringUnit: '°C', stale: false, outOfRange: '', updateCount: 184, error: '', detailsError: '' },
   { node: nodes.pressure, value: { Value: '6.8', Status: 'Good', SourceTimestamp: now, ServerTimestamp: now }, dataType: 'Float', engineeringUnit: 'bar', stale: false, outOfRange: '', updateCount: 177, error: '', detailsError: '' },
@@ -133,11 +162,11 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
   return {
     activeTab: tabByRequest[requested] || 'address-space',
     connected: true,
-    readOnlyMode: true,
+    readOnlyMode: !requested.startsWith('write-') || requested === 'write-read-only',
     currentConnection: 'Control Gateway',
     tree,
     selectedNodeID: nodes.temp.NodeID,
-    inspection,
+    inspection: inspectionForRequest(requested),
     watchlist,
     sessionTrend,
     focusedTrendNodeID: nodes.temp.NodeID,

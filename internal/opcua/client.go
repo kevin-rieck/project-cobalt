@@ -2,10 +2,14 @@ package opcua
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -134,6 +138,11 @@ func (c *gopcuaClient) Connect(ctx context.Context, request ConnectRequest) erro
 	if compactMessageSecurityMode(request.SecurityMode) != "None" && (request.ClientCertificatePath == "" || request.ClientPrivateKeyPath == "") {
 		return fmt.Errorf("secure endpoint requires client certificate and private key")
 	}
+	if compactMessageSecurityMode(request.SecurityMode) != "None" {
+		if _, err := loadClientPrivateKey(request.ClientPrivateKeyPath); err != nil {
+			return err
+		}
+	}
 	securityMode := ua.MessageSecurityModeFromString(request.SecurityMode)
 	endpoints, err := gopcua.GetEndpoints(ctx, request.Endpoint)
 	if err != nil {
@@ -151,7 +160,11 @@ func (c *gopcuaClient) Connect(ctx context.Context, request ConnectRequest) erro
 	// the endpoint the Automation Engineer supplied.
 	ep.EndpointURL = request.Endpoint
 
-	opts := clientOptionsForConnectRequest(ep, request)
+	opts, err := clientOptionsForConnectRequest(ep, request)
+	if err != nil {
+		log.Printf("opcua: client option validation failed endpointURL=%s error=%v", ep.EndpointURL, err)
+		return err
+	}
 
 	client, err := gopcua.NewClient(ep.EndpointURL, opts...)
 	if err != nil {
@@ -584,7 +597,7 @@ func rangeValue(value any) *ValueRange {
 	}
 }
 
-func clientOptionsForConnectRequest(ep *ua.EndpointDescription, request ConnectRequest) []gopcua.Option {
+func clientOptionsForConnectRequest(ep *ua.EndpointDescription, request ConnectRequest) ([]gopcua.Option, error) {
 	authType := ua.UserTokenTypeAnonymous
 	authOption := gopcua.AuthAnonymous()
 	if request.AuthType == AuthUsername {
@@ -597,16 +610,55 @@ func clientOptionsForConnectRequest(ep *ua.EndpointDescription, request ConnectR
 		gopcua.ProductURI("urn:opcua-studio"),
 	}
 	if compactMessageSecurityMode(request.SecurityMode) != "None" {
+		key, err := loadClientPrivateKey(request.ClientPrivateKeyPath)
+		if err != nil {
+			return nil, err
+		}
 		opts = append(opts,
 			gopcua.CertificateFile(request.ClientCertificatePath),
-			gopcua.PrivateKeyFile(request.ClientPrivateKeyPath),
+			gopcua.PrivateKey(key),
 		)
 	}
 	opts = append(opts,
 		gopcua.SecurityFromEndpoint(ep, authType),
 		authOption,
 	)
-	return opts
+	return opts, nil
+}
+
+func loadClientPrivateKey(filename string) (*rsa.PrivateKey, error) {
+	b, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load Client Private Key: %w", err)
+	}
+
+	derBytes := b
+	if block, _ := pem.Decode(b); block != nil {
+		if isEncryptedPrivateKeyPEM(block) {
+			return nil, fmt.Errorf("Client Private Key is encrypted; export or select an unencrypted RSA private key PEM/DER file for OPC UA secure endpoints")
+		}
+		derBytes = block.Bytes
+	}
+
+	if key, err := x509.ParsePKCS1PrivateKey(derBytes); err == nil {
+		return key, nil
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(derBytes)
+	if err != nil {
+		return nil, fmt.Errorf("Client Private Key must be an unencrypted RSA private key in PKCS#1 or PKCS#8 PEM/DER format")
+	}
+	key, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("Client Private Key must be an RSA private key")
+	}
+	return key, nil
+}
+
+func isEncryptedPrivateKeyPEM(block *pem.Block) bool {
+	if strings.Contains(strings.ToUpper(block.Type), "ENCRYPTED") {
+		return true
+	}
+	return strings.Contains(strings.ToUpper(block.Headers["Proc-Type"]), "ENCRYPTED") || block.Headers["DEK-Info"] != ""
 }
 
 func compactMessageSecurityMode(mode string) string {

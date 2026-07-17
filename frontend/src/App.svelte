@@ -184,7 +184,7 @@
   let watchlist: WatchlistRow[] = (readmeScreenshotState?.watchlist as WatchlistRow[]) ?? []
   let sessionTrend: SessionTrendView = (readmeScreenshotState?.sessionTrend as SessionTrendView) ?? { nodes: [], points: [] }
   let focusedTrendNodeID = readmeScreenshotState?.focusedTrendNodeID ?? ''
-  let logs: DiagnosticLogEntry[] = []
+  let logs: DiagnosticLogEntry[] = (readmeScreenshotState?.logs as DiagnosticLogEntry[]) ?? []
   let toasts: { id: number; level: string; message: string }[] = []
   let searchQuery = readmeScreenshotState?.searchQuery ?? ''
   let searchView: AddressSpaceSearchView = (readmeScreenshotState?.searchView as AddressSpaceSearchView) ?? { query: '', results: [], status: 'Connect to an OPC UA Server to search browsed Address Space metadata.' }

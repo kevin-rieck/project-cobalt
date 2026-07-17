@@ -76,6 +76,8 @@ function inspectionForRequest(requested: string): typeof inspection {
       }
     case 'write-live-value-stale':
       return { ...inspection, stale: true }
+    case 'write-status-warning':
+      return { ...inspection, value: { ...inspection.value, Status: 'UncertainLastUsableValue' } }
     case 'write-data-type-unsupported':
       return { ...inspection, details: { ...inspection.details, DataType: 'DateTime' } }
     case 'write-value-rank-non-scalar':
@@ -100,6 +102,12 @@ const watchlist = [
   { node: nodes.pressure, value: { Value: '6.8', Status: 'Good', SourceTimestamp: now, ServerTimestamp: now }, dataType: 'Float', engineeringUnit: 'bar', stale: false, outOfRange: '', updateCount: 177, error: '', detailsError: '' },
   { node: nodes.speed, value: { Value: '1.42', Status: 'UncertainLastUsableValue', SourceTimestamp: now, ServerTimestamp: now }, dataType: 'Double', engineeringUnit: 'm/s', stale: false, outOfRange: '', updateCount: 96, error: '', detailsError: '' },
   { node: nodes.rejectCount, value: { Value: '128', Status: 'Good', SourceTimestamp: later, ServerTimestamp: later }, dataType: 'UInt32', engineeringUnit: '', stale: false, outOfRange: 'Above expected range 0–100', updateCount: 23, error: '', detailsError: '' }
+]
+
+const writeLogs = [
+  { timestamp: now, level: 'info', message: `Variable Node Write attempted for ${nodes.temp.NodeID} target "84.2"` },
+  { timestamp: later, level: 'info', message: `Variable Node Write accepted for ${nodes.temp.NodeID} target "84.2"` },
+  { timestamp: later, level: 'info', message: `Variable Node Write read-back for ${nodes.temp.NodeID}: value="84.2" status=Good` }
 ]
 
 const searchResults = [nodes.temp, nodes.pressure, nodes.speed].map((node, index) => ({
@@ -135,6 +143,7 @@ export type ReadmeScreenshotState = {
   selectedNodeID: string
   inspection: typeof inspection
   confirmationInspectionUpdate: typeof inspection | null
+  logs: typeof writeLogs
   watchlist: typeof watchlist
   sessionTrend: typeof sessionTrend
   focusedTrendNodeID: string
@@ -175,6 +184,7 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
     selectedNodeID: nodes.temp.NodeID,
     inspection: inspectionForRequest(requested),
     confirmationInspectionUpdate: requested === 'write-confirmation-live-value-change' ? changedInspection : null,
+    logs: requested === 'write-feedback-logs' ? writeLogs : [],
     watchlist,
     sessionTrend,
     focusedTrendNodeID: nodes.temp.NodeID,

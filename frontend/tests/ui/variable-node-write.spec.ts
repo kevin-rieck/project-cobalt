@@ -11,6 +11,22 @@ async function expectConfirmationDetail(page: Page, label: string, value: string
   await expect(detail.getByText(value, { exact: true })).toBeVisible()
 }
 
+async function stubVariableNodeWrite(page: Page, result: unknown, error = '') {
+  await page.addInitScript(({ result, error }) => {
+    const write = error
+      ? () => Promise.reject(new Error(error))
+      : () => Promise.resolve(result)
+    ;(window as typeof window & { go: unknown }).go = { main: { App: { WriteVariableNodeValue: write } } }
+  }, { result, error })
+}
+
+async function submitVariableNodeWrite(page: Page, state = 'write-confirmation', target = '84.2') {
+  const writeValue = await openVariableNodeInspection(page, state)
+  await page.getByLabel('Target Value').fill(target)
+  await writeValue.click()
+  await page.getByRole('button', { name: 'Confirm write' }).click()
+}
+
 test('Variable Node Write confirmation requires deliberate review', async ({ page }) => {
   await page.addInitScript(() => {
     const testWindow = window as typeof window & { writeCalls: number; go: unknown }
@@ -61,6 +77,90 @@ test('a changed Live Value invalidates confirmation until it is cancelled and re
   await writeValue.click()
   await expectConfirmationDetail(page, 'Current Live Value', '84.0')
   await expect(page.getByRole('button', { name: 'Confirm write' })).toBeEnabled()
+})
+
+test('successful Variable Node Write feedback is visible inline and as a toast', async ({ page }) => {
+  await stubVariableNodeWrite(page, {
+    nodeID: 'ns=2;s=Plant.Line1.Filler.Temperature',
+    targetValue: '84.2',
+    status: 'success',
+    warning: '',
+    readBack: { Value: '84.2', Status: 'Good' }
+  })
+
+  await submitVariableNodeWrite(page)
+
+  await expect(page.getByText('Write accepted. Read-back: 84.2 (Good)', { exact: true })).toBeVisible()
+  await expect(page.getByText('Variable Node Write accepted', { exact: true })).toBeVisible()
+})
+
+test('failed Variable Node Write feedback is visible inline and as a toast', async ({ page }) => {
+  await stubVariableNodeWrite(page, null, 'BadNotWritable')
+
+  await submitVariableNodeWrite(page)
+
+  await expect(page.getByText('Error: BadNotWritable', { exact: true })).toBeVisible()
+  await expect(page.getByText('Variable Node Write failed: Error: BadNotWritable', { exact: true })).toBeVisible()
+})
+
+test('read-back mismatch is shown as a warning instead of ordinary success', async ({ page }) => {
+  const warning = 'read-back mismatch: target "84.2" but server returned "83.7"'
+  await stubVariableNodeWrite(page, {
+    nodeID: 'ns=2;s=Plant.Line1.Filler.Temperature',
+    targetValue: '84.2',
+    status: 'warning',
+    warning,
+    readBack: { Value: '83.7', Status: 'Good' }
+  })
+
+  await submitVariableNodeWrite(page)
+
+  await expect(page.getByText(warning, { exact: true })).toBeVisible()
+  await expect(page.getByText(`Variable Node Write accepted with warning: ${warning}`, { exact: true })).toBeVisible()
+  await expect(page.getByText(/Write accepted\. Read-back:/)).toHaveCount(0)
+})
+
+test('range metadata warning is visible and does not block confirmation', async ({ page }) => {
+  const writeValue = await openVariableNodeInspection(page, 'write-confirmation')
+  const warning = 'Target Value is above EURange (0–100); this warns but does not block.'
+
+  await page.getByLabel('Target Value').fill('125')
+  await expect(page.getByText(warning, { exact: true })).toBeVisible()
+  await expect(writeValue).toBeEnabled()
+
+  await writeValue.click()
+  await expect(page.getByRole('dialog').getByText(warning, { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Confirm write' })).toBeEnabled()
+})
+
+test('non-Good current status warning is visible and does not block confirmation for a fresh Live Value', async ({ page }) => {
+  const writeValue = await openVariableNodeInspection(page, 'write-status-warning')
+  const warning = 'Current status is UncertainLastUsableValue; confirm the value is safe to change.'
+
+  await page.getByLabel('Target Value').fill('84.2')
+  await expect(page.getByText(warning, { exact: true })).toBeVisible()
+  await expect(writeValue).toBeEnabled()
+
+  await writeValue.click()
+  await expect(page.getByRole('dialog').getByText(warning, { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Confirm write' })).toBeEnabled()
+})
+
+test('write-related Diagnostic Log feedback remains visible after a write', async ({ page }) => {
+  await stubVariableNodeWrite(page, {
+    nodeID: 'ns=2;s=Plant.Line1.Filler.Temperature',
+    targetValue: '84.2',
+    status: 'success',
+    warning: '',
+    readBack: { Value: '84.2', Status: 'Good' }
+  })
+  await submitVariableNodeWrite(page, 'write-feedback-logs')
+
+  await page.getByRole('button', { name: 'Diagnostic Logs' }).click()
+
+  await expect(page.getByText('Variable Node Write attempted for ns=2;s=Plant.Line1.Filler.Temperature target "84.2"', { exact: true })).toBeVisible()
+  await expect(page.getByText('Variable Node Write accepted for ns=2;s=Plant.Line1.Filler.Temperature target "84.2"', { exact: true })).toBeVisible()
+  await expect(page.getByText('Variable Node Write read-back for ns=2;s=Plant.Line1.Filler.Temperature: value="84.2" status=Good', { exact: true })).toBeVisible()
 })
 
 test('Read-Only Mode explains why Variable Node Write is unavailable', async ({ page }) => {

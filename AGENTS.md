@@ -5,7 +5,7 @@ This app is based on Go and Wails.
 
 ### Issue tracker
 
-Issues are tracked in GitHub Issues for `kevin-rieck/project-cobalt` using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues are tracked in GitHub Issues for `kevin-rieck/project-cobalt` using the `gh` CLI. External PRs are not a triage request surface. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

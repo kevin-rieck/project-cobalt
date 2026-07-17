@@ -599,6 +599,11 @@
       serverTimestamp: inspection.value?.ServerTimestamp || ''
     }
     writeConfirmOpen = true
+    if (readmeScreenshotState?.confirmationInspectionUpdate) {
+      queueMicrotask(() => {
+        inspection = readmeScreenshotState.confirmationInspectionUpdate as Inspection
+      })
+    }
   }
 
   function closeWriteConfirmation() {
@@ -1315,11 +1320,11 @@
 
   {#if writeConfirmOpen && inspection && writeConfirmationSnapshot}
     <div class="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-lg">
-      <div class="w-full max-w-2xl rounded-lg border border-outline-variant bg-surface p-lg shadow-2xl">
+      <div class="w-full max-w-2xl rounded-lg border border-outline-variant bg-surface p-lg shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="write-confirmation-heading">
         <div class="flex items-start justify-between gap-md">
           <div>
             <p class="label">Confirm Variable Node Write</p>
-            <h2 class="mt-xs text-2xl font-semibold">This changes the OPC UA Server</h2>
+            <h2 id="write-confirmation-heading" class="mt-xs text-2xl font-semibold">This changes the OPC UA Server</h2>
             <p class="mt-sm text-sm text-on-surface-variant">Review the current Live Value and Target Value. If the Live Value changes while this confirmation is open, confirmation is invalidated.</p>
           </div>
           <button class="rounded p-xs hover:bg-surface-container-high" on:click={closeWriteConfirmation} title="Cancel"><span class="material-symbols-outlined">close</span></button>

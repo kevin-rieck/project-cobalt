@@ -60,6 +60,12 @@ const inspection = {
   detailsError: ''
 }
 
+const changedInspection = {
+  ...inspection,
+  value: { ...inspection.value, Value: '84.0', SourceTimestamp: later, ServerTimestamp: later },
+  updateCount: inspection.updateCount + 1
+}
+
 function inspectionForRequest(requested: string): typeof inspection {
   switch (requested) {
     case 'write-metadata-failed':
@@ -128,6 +134,7 @@ export type ReadmeScreenshotState = {
   tree: typeof tree
   selectedNodeID: string
   inspection: typeof inspection
+  confirmationInspectionUpdate: typeof inspection | null
   watchlist: typeof watchlist
   sessionTrend: typeof sessionTrend
   focusedTrendNodeID: string
@@ -167,6 +174,7 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
     tree,
     selectedNodeID: nodes.temp.NodeID,
     inspection: inspectionForRequest(requested),
+    confirmationInspectionUpdate: requested === 'write-confirmation-live-value-change' ? changedInspection : null,
     watchlist,
     sessionTrend,
     focusedTrendNodeID: nodes.temp.NodeID,

@@ -11,7 +11,17 @@ import (
 
 	"opcua-studio/internal/connections"
 	"opcua-studio/internal/opcua"
+	"opcua-studio/internal/search"
 )
+
+func configureSearchSession(app *App, options search.SessionOptions) {
+	app.newAddressSpaceSearchSession = func(ctx context.Context, browser search.Browser) *search.Session {
+		options.ReportBrowseError = func(nodeID string, err error) {
+			app.appendLog("error", "Shallow Address Space Indexing browse failed for "+nodeID+": "+err.Error())
+		}
+		return search.NewSession(ctx, browser, options)
+	}
+}
 
 type recordingClient struct {
 	mu               sync.Mutex
@@ -361,7 +371,7 @@ func TestShallowAddressSpaceIndexingAddsSearchableNodeClassesButOnlyRecursesThro
 		"ns=2;s=Temperature": {{NodeID: "ns=2;s=ShouldNotBrowse", DisplayName: "Should Not Browse", BrowseName: "2:ShouldNotBrowse", NodeClass: "Variable"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -412,7 +422,7 @@ func TestExplicitBrowsePrioritizesDiscoveredParentNodesAheadOfBackgroundIndexing
 		"ns=2;s=BackgroundArea": {{NodeID: "ns=2;s=BackgroundPressure", DisplayName: "Background Pressure", BrowseName: "2:BackgroundPressure", NodeClass: "Variable"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 50 * time.Millisecond
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 50 * time.Millisecond})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -475,7 +485,7 @@ func TestExplicitBrowseAddsDiscoveredChildrenToSearchImmediately(t *testing.T) {
 		"ns=2;s=ManualArea": {{NodeID: "ns=2;s=ManualTemperature", DisplayName: "Manual Temperature", BrowseName: "2:ManualTemperature", NodeClass: "Variable"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = time.Hour
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: time.Hour})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -662,7 +672,7 @@ func TestBackgroundShallowAddressSpaceIndexingBrowseFailureRecordsDiagnostic(t *
 		browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")},
 	}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -690,7 +700,7 @@ func TestBackgroundShallowAddressSpaceIndexingDoesNotRetryFailedParentInLoop(t *
 		browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")},
 	}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -736,7 +746,7 @@ func TestBackgroundShallowAddressSpaceIndexingContinuesAfterBrowseFailure(t *tes
 		browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")},
 	}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -817,8 +827,7 @@ func TestAddressSpaceSearchStatusShowsIndexingBudgetExhausted(t *testing.T) {
 		"i=85": {{NodeID: "ns=2;s=Area1", DisplayName: "Area 1", BrowseName: "2:Area1", NodeClass: "Object"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
-	app.shallowIndexBrowseBudget = 1
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond, BrowseBudget: 1})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -848,8 +857,7 @@ func TestShallowAddressSpaceIndexingStopsAtSessionBudget(t *testing.T) {
 		"ns=2;s=Area2": {{NodeID: "ns=2;s=Area3", DisplayName: "Area 3", BrowseName: "2:Area3", NodeClass: "Object"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
-	app.shallowIndexBrowseBudget = 2
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond, BrowseBudget: 2})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -874,8 +882,7 @@ func TestExplicitBrowseWorksAfterShallowAddressSpaceIndexingBudgetIsExhausted(t 
 		"ns=2;s=ManualArea": {{NodeID: "ns=2;s=ManualTemperature", DisplayName: "Manual Temperature", BrowseName: "2:ManualTemperature", NodeClass: "Variable"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
-	app.shallowIndexBrowseBudget = 1
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond, BrowseBudget: 1})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -904,8 +911,7 @@ func TestReconnectResetsShallowAddressSpaceIndexingBudget(t *testing.T) {
 		"i=85": {{NodeID: "ns=2;s=FirstArea", DisplayName: "First Area", BrowseName: "2:FirstArea", NodeClass: "Object"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
-	app.shallowIndexBrowseBudget = 1
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond, BrowseBudget: 1})
 	app.client = firstClient
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://first.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {

@@ -80,8 +80,19 @@ function inspectionForRequest(requested: string): typeof inspection {
         details: { ...inspection.details, NodeID: '', DataType: '' },
         detailsError: 'BadAttributeIdInvalid'
       }
+    case 'write-metadata-unavailable':
+      return {
+        ...inspection,
+        details: { ...inspection.details, NodeID: '', DataType: '' }
+      }
     case 'write-live-value-stale':
       return { ...inspection, stale: true }
+    case 'write-live-value-unavailable':
+      return {
+        ...inspection,
+        value: { Value: '', Status: '', SourceTimestamp: '', ServerTimestamp: '' },
+        updateCount: 0
+      }
     case 'write-status-warning':
       return { ...inspection, value: { ...inspection.value, Status: 'UncertainLastUsableValue' } }
     case 'write-data-type-unsupported':

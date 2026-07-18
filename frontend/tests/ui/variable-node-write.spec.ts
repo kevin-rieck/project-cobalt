@@ -229,11 +229,35 @@ test('failed metadata explains that write availability could not be determined a
   await expect(page.getByRole('button', { name: 'Confirm write' })).toHaveCount(0)
 })
 
+test('missing metadata explains that write availability cannot be determined and blocks confirmation', async ({ page }) => {
+  const writeValue = await openVariableNodeInspection(page, 'write-metadata-unavailable')
+
+  await page.getByLabel('Target Value').fill('84.2')
+  await expect(writeValue).toBeDisabled()
+  await expect(page.getByText('Write availability cannot yet be determined because Variable Node metadata is unavailable.')).toBeVisible()
+
+  await writeValue.evaluate(button => (button as HTMLButtonElement).click())
+  await expect(page.getByRole('heading', { name: 'This changes the OPC UA Server' })).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Confirm write' })).toHaveCount(0)
+})
+
 test('a stale Live Value explains why Variable Node Write is unavailable', async ({ page }) => {
   const writeValue = await openVariableNodeInspection(page, 'write-live-value-stale')
 
   await expect(writeValue).toBeDisabled()
-  await expect(page.getByText('Current Live Value is stale or unavailable.')).toBeVisible()
+  await expect(page.getByText('Current Live Value is stale.')).toBeVisible()
+})
+
+test('an unavailable Live Value explains why Variable Node Write is unavailable and blocks confirmation', async ({ page }) => {
+  const writeValue = await openVariableNodeInspection(page, 'write-live-value-unavailable')
+
+  await page.getByLabel('Target Value').fill('84.2')
+  await expect(writeValue).toBeDisabled()
+  await expect(page.getByText('Current Live Value is unavailable.')).toBeVisible()
+
+  await writeValue.evaluate(button => (button as HTMLButtonElement).click())
+  await expect(page.getByRole('heading', { name: 'This changes the OPC UA Server' })).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Confirm write' })).toHaveCount(0)
 })
 
 test('an unsupported data type gives a data-type-specific disabled reason', async ({ page }) => {

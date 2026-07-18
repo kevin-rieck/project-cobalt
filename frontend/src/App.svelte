@@ -657,7 +657,8 @@
       if (current.details.DataType && !isSupportedWriteDataType(current.details.DataType)) reasons.push(`Data type ${current.details.DataType} is not supported for Variable Node Write.`)
       if (!current.details.DataType) reasons.push('Data type is unavailable.')
     }
-    if (current.stale || current.error || current.updateCount === 0) reasons.push('Current Live Value is stale or unavailable.')
+    if (current.stale) reasons.push('Current Live Value is stale.')
+    else if (current.error || current.updateCount === 0) reasons.push('Current Live Value is unavailable.')
     const parseError = parseWriteTargetError(current.details?.DataType || '', target)
     if (parseError) reasons.push(parseError)
     return reasons

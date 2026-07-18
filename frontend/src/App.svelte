@@ -644,13 +644,19 @@
     if (isReadOnly) reasons.push('Read-Only Mode is active.')
     if (!current) return [...reasons, 'Select a Variable Node in Variable Node Inspection.']
     if (current.node.NodeClass !== 'Variable') reasons.push('Selected node is not a Variable Node.')
-    if (current.loadingDetails) reasons.push('Waiting for Variable Node metadata.')
-    if (current.detailsError) reasons.push(`Details failed to load: ${current.detailsError}`)
-    if (!current.details?.NodeID) reasons.push('Write availability cannot be determined until metadata loads.')
-    if (current.details?.ValueRank && current.details.ValueRank !== 'Scalar') reasons.push(`Only scalar Variable Node Writes are supported; ValueRank is ${current.details.ValueRank}.`)
-    if (current.details?.NodeID && !current.details.Writable) reasons.push(current.details.WriteAvailability || 'Effective metadata says this Variable Node is not writable in this session.')
-    if (current.details?.DataType && !isSupportedWriteDataType(current.details.DataType)) reasons.push(`Data type ${current.details.DataType} is not supported for Variable Node Write.`)
-    if (!current.details?.DataType) reasons.push('Data type is unavailable.')
+    if (current.loadingDetails) {
+      reasons.push('Write availability cannot yet be determined while Variable Node metadata is loading.')
+    } else if (current.detailsError) {
+      reasons.push('Write availability could not be determined because Variable Node metadata failed to load.')
+      reasons.push(`Details failed to load: ${current.detailsError}`)
+    } else if (!current.details?.NodeID) {
+      reasons.push('Write availability cannot yet be determined because Variable Node metadata is unavailable.')
+    } else {
+      if (current.details.ValueRank && current.details.ValueRank !== 'Scalar') reasons.push(`Only scalar Variable Node Writes are supported; ValueRank is ${current.details.ValueRank}.`)
+      if (!current.details.Writable) reasons.push(current.details.WriteAvailability || 'Effective metadata says this Variable Node is not writable in this session.')
+      if (current.details.DataType && !isSupportedWriteDataType(current.details.DataType)) reasons.push(`Data type ${current.details.DataType} is not supported for Variable Node Write.`)
+      if (!current.details.DataType) reasons.push('Data type is unavailable.')
+    }
     if (current.stale || current.error || current.updateCount === 0) reasons.push('Current Live Value is stale or unavailable.')
     const parseError = parseWriteTargetError(current.details?.DataType || '', target)
     if (parseError) reasons.push(parseError)

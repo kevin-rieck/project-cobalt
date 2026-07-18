@@ -68,6 +68,12 @@ const changedInspection = {
 
 function inspectionForRequest(requested: string): typeof inspection {
   switch (requested) {
+    case 'write-metadata-loading':
+      return {
+        ...inspection,
+        details: { ...inspection.details, NodeID: '', DataType: '' },
+        loadingDetails: true
+      }
     case 'write-metadata-failed':
       return {
         ...inspection,

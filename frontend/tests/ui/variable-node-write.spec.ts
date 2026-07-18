@@ -205,11 +205,28 @@ test('Read-Only Mode explains why Variable Node Write is unavailable', async ({ 
   await expect(page.getByText('Read-Only Mode is active.')).toBeVisible()
 })
 
-test('failed metadata explains that write availability cannot be determined', async ({ page }) => {
+test('loading metadata explains that write availability cannot yet be determined and blocks confirmation', async ({ page }) => {
+  const writeValue = await openVariableNodeInspection(page, 'write-metadata-loading')
+
+  await page.getByLabel('Target Value').fill('84.2')
+  await expect(writeValue).toBeDisabled()
+  await expect(page.getByText('Write availability cannot yet be determined while Variable Node metadata is loading.')).toBeVisible()
+
+  await writeValue.evaluate(button => (button as HTMLButtonElement).click())
+  await expect(page.getByRole('heading', { name: 'This changes the OPC UA Server' })).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Confirm write' })).toHaveCount(0)
+})
+
+test('failed metadata explains that write availability could not be determined and blocks confirmation', async ({ page }) => {
   const writeValue = await openVariableNodeInspection(page, 'write-metadata-failed')
 
+  await page.getByLabel('Target Value').fill('84.2')
   await expect(writeValue).toBeDisabled()
-  await expect(page.getByText('Write availability cannot be determined until metadata loads.')).toBeVisible()
+  await expect(page.getByText('Write availability could not be determined because Variable Node metadata failed to load.')).toBeVisible()
+
+  await writeValue.evaluate(button => (button as HTMLButtonElement).click())
+  await expect(page.getByRole('heading', { name: 'This changes the OPC UA Server' })).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Confirm write' })).toHaveCount(0)
 })
 
 test('a stale Live Value explains why Variable Node Write is unavailable', async ({ page }) => {

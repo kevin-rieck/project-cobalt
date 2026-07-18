@@ -222,6 +222,52 @@ func TestSessionExplicitBrowsePrioritizesDiscoveredParents(t *testing.T) {
 	t.Fatalf("browse requests = %#v, want prioritized ManualSkid", browser.browseRequests())
 }
 
+func TestSessionExplicitBrowsePromotesAlreadyQueuedParent(t *testing.T) {
+	browser := &recordingBrowser{children: map[string][]opcua.AddressNode{
+		objectsRootNodeID: {
+			{NodeID: "ns=2;s=BackgroundFirst", NodeClass: "Object"},
+			{NodeID: "ns=2;s=Promoted", NodeClass: "Object"},
+		},
+		"ns=2;s=ManualArea": {{NodeID: "ns=2;s=Promoted", NodeClass: "Object"}},
+	}}
+	session := NewSession(context.Background(), browser, SessionOptions{BrowseInterval: 40 * time.Millisecond, BrowseBudget: 10})
+	defer session.Stop()
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) && len(browser.browseRequests()) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := session.BrowseChildren("ns=2;s=ManualArea"); err != nil {
+		t.Fatalf("BrowseChildren() error = %v", err)
+	}
+
+	deadline = time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		requests := browser.browseRequests()
+		if len(requests) >= 4 {
+			if requests[2] != "ns=2;s=Promoted" || requests[3] != "ns=2;s=BackgroundFirst" {
+				t.Fatalf("browse requests = %#v, want queued parent promoted ahead of BackgroundFirst", requests)
+			}
+			if got := countRequests(requests, "ns=2;s=Promoted"); got != 1 {
+				t.Fatalf("browse requests = %#v, want promoted parent browsed once, got %d", requests, got)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("browse requests = %#v, want promoted parent browsed", browser.browseRequests())
+}
+
+func countRequests(requests []string, nodeID string) int {
+	count := 0
+	for _, request := range requests {
+		if request == nodeID {
+			count++
+		}
+	}
+	return count
+}
+
 func TestSessionBrowseChildrenIngestsMetadataForSearch(t *testing.T) {
 	browser := &browseOnlyAdapter{children: map[string][]opcua.AddressNode{
 		"ns=2;s=Area": {{NodeID: "ns=2;s=Pump", DisplayName: "Feed Pump", BrowseName: "2:FeedPump", NodeClass: "Variable"}},

@@ -218,13 +218,13 @@ func (s *Session) runShallowIndexing() {
 	firstBrowse := true
 
 	for {
-		drainPriorityRequests(s.prioritize, &priorityQueue, seen)
+		drainPriorityRequests(s.prioritize, &priorityQueue, &backgroundQueue, seen)
 		if len(priorityQueue) == 0 && len(backgroundQueue) == 0 {
 			select {
 			case <-s.ctx.Done():
 				return
 			case nodes := <-s.prioritize:
-				enqueueParentNodes(nodes, &priorityQueue, seen)
+				prioritizeParentNodes(nodes, &priorityQueue, &backgroundQueue, seen)
 				continue
 			}
 		}
@@ -238,14 +238,14 @@ func (s *Session) runShallowIndexing() {
 					timer.Stop()
 					return
 				case nodes := <-s.prioritize:
-					enqueueParentNodes(nodes, &priorityQueue, seen)
+					prioritizeParentNodes(nodes, &priorityQueue, &backgroundQueue, seen)
 				case <-timer.C:
 					waiting = false
 				}
 			}
 		}
 		firstBrowse = false
-		drainPriorityRequests(s.prioritize, &priorityQueue, seen)
+		drainPriorityRequests(s.prioritize, &priorityQueue, &backgroundQueue, seen)
 
 		if browseCount >= s.browseBudget {
 			budgetExhausted = true
@@ -281,15 +281,38 @@ func (s *Session) runShallowIndexing() {
 	}
 }
 
-func drainPriorityRequests(prioritize <-chan []opcua.AddressNode, queue *[]string, seen map[string]bool) {
+func drainPriorityRequests(prioritize <-chan []opcua.AddressNode, priorityQueue, backgroundQueue *[]string, seen map[string]bool) {
 	for {
 		select {
 		case nodes := <-prioritize:
-			enqueueParentNodes(nodes, queue, seen)
+			prioritizeParentNodes(nodes, priorityQueue, backgroundQueue, seen)
 		default:
 			return
 		}
 	}
+}
+
+func prioritizeParentNodes(nodes []opcua.AddressNode, priorityQueue, backgroundQueue *[]string, seen map[string]bool) {
+	for _, node := range nodes {
+		nodeID, isParent := parentNodeID(node)
+		if !isParent {
+			continue
+		}
+		if removeQueuedNode(backgroundQueue, nodeID) || !seen[nodeID] {
+			seen[nodeID] = true
+			*priorityQueue = append(*priorityQueue, nodeID)
+		}
+	}
+}
+
+func removeQueuedNode(queue *[]string, nodeID string) bool {
+	for i, queuedNodeID := range *queue {
+		if queuedNodeID == nodeID {
+			*queue = append((*queue)[:i], (*queue)[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 func enqueueParentNodes(nodes []opcua.AddressNode, queue *[]string, seen map[string]bool) {

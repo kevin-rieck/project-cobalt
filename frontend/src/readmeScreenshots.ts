@@ -104,12 +104,6 @@ const watchlist = [
   { node: nodes.rejectCount, value: { Value: '128', Status: 'Good', SourceTimestamp: later, ServerTimestamp: later }, dataType: 'UInt32', engineeringUnit: '', stale: false, outOfRange: 'Above expected range 0–100', updateCount: 23, error: '', detailsError: '' }
 ]
 
-const writeLogs = [
-  { timestamp: now, level: 'info', message: `Variable Node Write attempted for ${nodes.temp.NodeID} target "84.2"` },
-  { timestamp: later, level: 'info', message: `Variable Node Write accepted for ${nodes.temp.NodeID} target "84.2"` },
-  { timestamp: later, level: 'info', message: `Variable Node Write read-back for ${nodes.temp.NodeID}: value="84.2" status=Good` }
-]
-
 const searchResults = [nodes.temp, nodes.pressure, nodes.speed].map((node, index) => ({
   node,
   matchKind: index === 0 ? 'DisplayName' : 'BrowseName',
@@ -143,7 +137,8 @@ export type ReadmeScreenshotState = {
   selectedNodeID: string
   inspection: typeof inspection
   confirmationInspectionUpdate: typeof inspection | null
-  logs: typeof writeLogs
+  logs: Array<{ timestamp: string; level: string; message: string }>
+  receiveRuntimeEvents: boolean
   watchlist: typeof watchlist
   sessionTrend: typeof sessionTrend
   focusedTrendNodeID: string
@@ -184,7 +179,8 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
     selectedNodeID: nodes.temp.NodeID,
     inspection: inspectionForRequest(requested),
     confirmationInspectionUpdate: requested === 'write-confirmation-live-value-change' ? changedInspection : null,
-    logs: requested === 'write-feedback-logs' ? writeLogs : [],
+    logs: [],
+    receiveRuntimeEvents: requested === 'write-feedback-events',
     watchlist,
     sessionTrend,
     focusedTrendNodeID: nodes.temp.NodeID,

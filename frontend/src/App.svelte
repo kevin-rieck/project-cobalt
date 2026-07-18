@@ -215,14 +215,17 @@
   $: writeStatusWarning = inspection && !inspection.stale && inspection.value?.Status && !inspection.value.Status.includes('Good') ? `Current status is ${inspection.value.Status}; confirm the value is safe to change.` : ''
 
   onMount(async () => {
-    if (readmeScreenshotState) return
+    if (!readmeScreenshotState) {
+      logs = await GetDiagnosticLogs()
+      savedConnections = await GetSavedConnections()
+      const sessionSafety = await GetSessionSafety()
+      applySessionSafety(sessionSafety)
+      watchlist = await GetWatchlist()
+      sessionTrend = await GetSessionTrend(focusedTrendNodeID)
+    } else if (!readmeScreenshotState.receiveRuntimeEvents) {
+      return
+    }
 
-    logs = await GetDiagnosticLogs()
-    savedConnections = await GetSavedConnections()
-    const sessionSafety = await GetSessionSafety()
-    applySessionSafety(sessionSafety)
-    watchlist = await GetWatchlist()
-    sessionTrend = await GetSessionTrend(focusedTrendNodeID)
     const offInspection = EventsOn('variable-inspection-updated', (payload: Inspection | null) => {
       const previousNodeID = inspection?.node?.NodeID || ''
       inspection = payload

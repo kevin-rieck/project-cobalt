@@ -147,20 +147,55 @@ test('non-Good current status warning is visible and does not block confirmation
 })
 
 test('write-related Diagnostic Log feedback remains visible after a write', async ({ page }) => {
-  await stubVariableNodeWrite(page, {
-    nodeID: 'ns=2;s=Plant.Line1.Filler.Temperature',
-    targetValue: '84.2',
-    status: 'success',
-    warning: '',
-    readBack: { Value: '84.2', Status: 'Good' }
-  })
-  await submitVariableNodeWrite(page, 'write-feedback-logs')
+  const messages = [
+    'Variable Node Write attempted for ns=2;s=Plant.Line1.Filler.Temperature target "84.2"',
+    'Variable Node Write accepted for ns=2;s=Plant.Line1.Filler.Temperature target "84.2"',
+    'Variable Node Write read-back for ns=2;s=Plant.Line1.Filler.Temperature: value="84.2" status=Good'
+  ]
+  await page.addInitScript((writeMessages) => {
+    type EventCallback = (...args: unknown[]) => void
+    const listeners = new Map<string, Set<EventCallback>>()
+    const runtime = {
+      EventsOnMultiple(eventName: string, callback: EventCallback) {
+        const eventListeners = listeners.get(eventName) ?? new Set<EventCallback>()
+        eventListeners.add(callback)
+        listeners.set(eventName, eventListeners)
+        return () => eventListeners.delete(callback)
+      },
+      EventsEmit(eventName: string, ...args: unknown[]) {
+        listeners.get(eventName)?.forEach(callback => callback(...args))
+      }
+    }
+    ;(window as typeof window & { runtime: typeof runtime; go: unknown }).runtime = runtime
+    ;(window as typeof window & { go: unknown }).go = { main: { App: {
+      WriteVariableNodeValue: () => {
+        writeMessages.forEach((message, index) => runtime.EventsEmit('diagnostic-log-appended', {
+          timestamp: `2026-06-25T14:32:2${index}Z`,
+          level: 'info',
+          message
+        }))
+        return Promise.resolve({
+          nodeID: 'ns=2;s=Plant.Line1.Filler.Temperature',
+          targetValue: '84.2',
+          status: 'success',
+          warning: '',
+          readBack: { Value: '84.2', Status: 'Good' }
+        })
+      }
+    } } }
+  }, messages)
 
+  await page.goto('/?screenshot=write-feedback-events')
+  await page.getByRole('button', { name: 'Diagnostic Logs' }).click()
+  for (const message of messages) await expect(page.getByText(message, { exact: true })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Address Space' }).click()
+  await page.getByLabel('Target Value').fill('84.2')
+  await page.getByRole('button', { name: 'Write value', exact: true }).click()
+  await page.getByRole('button', { name: 'Confirm write' }).click()
   await page.getByRole('button', { name: 'Diagnostic Logs' }).click()
 
-  await expect(page.getByText('Variable Node Write attempted for ns=2;s=Plant.Line1.Filler.Temperature target "84.2"', { exact: true })).toBeVisible()
-  await expect(page.getByText('Variable Node Write accepted for ns=2;s=Plant.Line1.Filler.Temperature target "84.2"', { exact: true })).toBeVisible()
-  await expect(page.getByText('Variable Node Write read-back for ns=2;s=Plant.Line1.Filler.Temperature: value="84.2" status=Good', { exact: true })).toBeVisible()
+  for (const message of messages) await expect(page.getByText(message, { exact: true })).toBeVisible()
 })
 
 test('Read-Only Mode explains why Variable Node Write is unavailable', async ({ page }) => {

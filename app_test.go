@@ -11,7 +11,14 @@ import (
 
 	"opcua-studio/internal/connections"
 	"opcua-studio/internal/opcua"
+	"opcua-studio/internal/search"
 )
+
+func configureSearchSession(app *App, options search.SessionOptions) {
+	app.newAddressSpaceSearchSession = func(ctx context.Context, browser search.Browser) *search.Session {
+		return search.NewSession(ctx, browser, options)
+	}
+}
 
 type recordingClient struct {
 	mu               sync.Mutex
@@ -22,6 +29,7 @@ type recordingClient struct {
 	browseErrors     map[string]error
 	browseRequests   []string
 	browseTimes      []time.Time
+	browseContexts   []context.Context
 	readValues       map[string]opcua.LiveValue
 	readValueErrors  map[string]error
 	readValueIDs     []string
@@ -47,11 +55,12 @@ func (c *recordingClient) Connect(_ context.Context, request opcua.ConnectReques
 	return c.connectErr
 }
 
-func (c *recordingClient) BrowseChildren(_ context.Context, nodeID string) ([]opcua.AddressNode, error) {
+func (c *recordingClient) BrowseChildren(ctx context.Context, nodeID string) ([]opcua.AddressNode, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.browseRequests = append(c.browseRequests, nodeID)
 	c.browseTimes = append(c.browseTimes, time.Now())
+	c.browseContexts = append(c.browseContexts, ctx)
 	if err := c.browseErrors[nodeID]; err != nil {
 		return nil, err
 	}
@@ -75,6 +84,14 @@ func (c *recordingClient) recordedBrowseTimes() []time.Time {
 	times := make([]time.Time, len(c.browseTimes))
 	copy(times, c.browseTimes)
 	return times
+}
+
+func (c *recordingClient) recordedBrowseContexts() []context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	contexts := make([]context.Context, len(c.browseContexts))
+	copy(contexts, c.browseContexts)
+	return contexts
 }
 
 func (c *recordingClient) ReadNodeDetails(_ context.Context, nodeID string) (opcua.NodeDetails, error) {
@@ -119,6 +136,38 @@ type blockingBrowseClient struct {
 	recordingClient
 	started chan struct{}
 	release chan struct{}
+}
+
+type blockingCloseClient struct {
+	recordingClient
+	started chan struct{}
+	release chan struct{}
+}
+
+type blockingConnectClient struct {
+	recordingClient
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingConnectClient) Connect(ctx context.Context, request opcua.ConnectRequest) error {
+	select {
+	case <-c.started:
+	default:
+		close(c.started)
+	}
+	<-c.release
+	return c.recordingClient.Connect(ctx, request)
+}
+
+func (c *blockingCloseClient) Close(context.Context) error {
+	select {
+	case <-c.started:
+	default:
+		close(c.started)
+	}
+	<-c.release
+	return nil
 }
 
 func (c *blockingBrowseClient) BrowseChildren(context.Context, string) ([]opcua.AddressNode, error) {
@@ -252,6 +301,37 @@ func TestDisconnectWhenClientCloseFailsStillDisconnectsApp(t *testing.T) {
 	}
 }
 
+func TestDisconnectReturnsWhenClientCloseBlocks(t *testing.T) {
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.disconnectCloseTimeout = 10 * time.Millisecond
+	client := &blockingCloseClient{started: make(chan struct{}), release: make(chan struct{})}
+	app.client = client
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- app.Disconnect() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Disconnect() error = %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Disconnect() hung waiting for client Close")
+	}
+	select {
+	case <-client.started:
+	default:
+		t.Fatal("Disconnect() did not attempt to close the previous OPC UA client")
+	}
+	if safety := app.GetSessionSafety(); safety.Connected {
+		t.Fatalf("GetSessionSafety().Connected = true, want false after Disconnect even if Close blocks")
+	}
+	close(client.release)
+}
+
 func TestReenablingReadOnlyModeRecordsDiagnosticLog(t *testing.T) {
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
 	app.client = &recordingClient{}
@@ -314,7 +394,7 @@ func TestShallowAddressSpaceIndexingAddsSearchableNodeClassesButOnlyRecursesThro
 		"ns=2;s=Temperature": {{NodeID: "ns=2;s=ShouldNotBrowse", DisplayName: "Should Not Browse", BrowseName: "2:ShouldNotBrowse", NodeClass: "Variable"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -365,7 +445,7 @@ func TestExplicitBrowsePrioritizesDiscoveredParentNodesAheadOfBackgroundIndexing
 		"ns=2;s=BackgroundArea": {{NodeID: "ns=2;s=BackgroundPressure", DisplayName: "Background Pressure", BrowseName: "2:BackgroundPressure", NodeClass: "Variable"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 50 * time.Millisecond
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 50 * time.Millisecond})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -428,7 +508,7 @@ func TestExplicitBrowseAddsDiscoveredChildrenToSearchImmediately(t *testing.T) {
 		"ns=2;s=ManualArea": {{NodeID: "ns=2;s=ManualTemperature", DisplayName: "Manual Temperature", BrowseName: "2:ManualTemperature", NodeClass: "Variable"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = time.Hour
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: time.Hour})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -609,13 +689,9 @@ func TestWriteVariableNodeValueReportsFailureAndReadBackMismatch(t *testing.T) {
 
 func TestBackgroundShallowAddressSpaceIndexingBrowseFailureRecordsDiagnostic(t *testing.T) {
 	client := &recordingClient{
-		browseChildren: map[string][]opcua.AddressNode{
-			"i=85": {{NodeID: "ns=2;s=BadArea", DisplayName: "Bad Area", BrowseName: "2:BadArea", NodeClass: "Object"}},
-		},
-		browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")},
+		browseErrors: map[string]error{"i=85": errors.New("access denied")},
 	}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -626,7 +702,7 @@ func TestBackgroundShallowAddressSpaceIndexingBrowseFailureRecordsDiagnostic(t *
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		for _, entry := range app.GetDiagnosticLogs() {
-			if strings.Contains(entry.Message, "Shallow Address Space Indexing browse failed for ns=2;s=BadArea") && strings.Contains(entry.Message, "access denied") {
+			if strings.Contains(entry.Message, "Shallow Address Space Indexing browse failed for i=85") && strings.Contains(entry.Message, "access denied") {
 				return
 			}
 		}
@@ -643,7 +719,7 @@ func TestBackgroundShallowAddressSpaceIndexingDoesNotRetryFailedParentInLoop(t *
 		browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")},
 	}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -689,7 +765,7 @@ func TestBackgroundShallowAddressSpaceIndexingContinuesAfterBrowseFailure(t *tes
 		browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")},
 	}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -770,8 +846,7 @@ func TestAddressSpaceSearchStatusShowsIndexingBudgetExhausted(t *testing.T) {
 		"i=85": {{NodeID: "ns=2;s=Area1", DisplayName: "Area 1", BrowseName: "2:Area1", NodeClass: "Object"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
-	app.shallowIndexBrowseBudget = 1
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond, BrowseBudget: 1})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -801,8 +876,7 @@ func TestShallowAddressSpaceIndexingStopsAtSessionBudget(t *testing.T) {
 		"ns=2;s=Area2": {{NodeID: "ns=2;s=Area3", DisplayName: "Area 3", BrowseName: "2:Area3", NodeClass: "Object"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
-	app.shallowIndexBrowseBudget = 2
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond, BrowseBudget: 2})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -827,8 +901,7 @@ func TestExplicitBrowseWorksAfterShallowAddressSpaceIndexingBudgetIsExhausted(t 
 		"ns=2;s=ManualArea": {{NodeID: "ns=2;s=ManualTemperature", DisplayName: "Manual Temperature", BrowseName: "2:ManualTemperature", NodeClass: "Variable"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
-	app.shallowIndexBrowseBudget = 1
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond, BrowseBudget: 1})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -857,8 +930,7 @@ func TestReconnectResetsShallowAddressSpaceIndexingBudget(t *testing.T) {
 		"i=85": {{NodeID: "ns=2;s=FirstArea", DisplayName: "First Area", BrowseName: "2:FirstArea", NodeClass: "Object"}},
 	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	app.shallowIndexBrowseInterval = 10 * time.Millisecond
-	app.shallowIndexBrowseBudget = 1
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond, BrowseBudget: 1})
 	app.client = firstClient
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://first.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -875,7 +947,7 @@ func TestReconnectResetsShallowAddressSpaceIndexingBudget(t *testing.T) {
 	secondClient := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
 		"i=85": {{NodeID: "ns=2;s=SecondPump", DisplayName: "Second Pump", BrowseName: "2:SecondPump", NodeClass: "Variable"}},
 	}}
-	app.client = secondClient
+	app.newClient = func() opcua.Client { return secondClient }
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://second.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
 		t.Fatalf("second Connect() error = %v", err)
 	}
@@ -953,31 +1025,129 @@ func TestDisconnectClearsSessionLocalShallowIndexedSearchMetadata(t *testing.T) 
 	}
 }
 
-func TestReconnectCancelsPreviousShallowAddressSpaceIndexerAndClearsItsSearchMetadata(t *testing.T) {
-	firstClient := &blockingBrowseClient{started: make(chan struct{}), release: make(chan struct{})}
+func TestSuccessfulReconnectReplacesAddressSpaceSearchSessionOnce(t *testing.T) {
+	firstClient := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"i=85": {{NodeID: "ns=2;s=FirstPump", DisplayName: "First Pump", BrowseName: "2:FirstPump", NodeClass: "Variable"}},
+	}}
+	secondClient := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"i=85": {{NodeID: "ns=2;s=SecondPump", DisplayName: "Second Pump", BrowseName: "2:SecondPump", NodeClass: "Variable"}},
+	}}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
 	app.client = firstClient
+	app.newClient = func() opcua.Client { return secondClient }
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond, BrowseBudget: 1})
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://first.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("first Connect() error = %v", err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) && len(firstClient.recordedBrowseRequests()) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://second.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("second Connect() error = %v", err)
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) && len(secondClient.recordedBrowseRequests()) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if requests := secondClient.recordedBrowseRequests(); len(requests) != 1 || requests[0] != "i=85" {
+		t.Fatalf("replacement client browse requests = %#v, want one replacement session root browse", requests)
+	}
+	firstBrowseContexts := firstClient.recordedBrowseContexts()
+	if len(firstBrowseContexts) != 1 {
+		t.Fatalf("previous client browse contexts = %d, want one", len(firstBrowseContexts))
+	}
+	select {
+	case <-firstBrowseContexts[0].Done():
+	default:
+		t.Fatal("previous Address Space Search session context remains active after reconnect")
+	}
+	view, err := app.SearchAddressSpace("Pump")
+	if err != nil {
+		t.Fatalf("SearchAddressSpace() error = %v", err)
+	}
+	if len(view.Results) != 1 || view.Results[0].Node.NodeID != "ns=2;s=SecondPump" {
+		t.Fatalf("SearchAddressSpace() after successful reconnect = %#v, want only replacement metadata", view)
+	}
+}
+
+func TestFailedReconnectPreservesExistingAddressSpaceSearchSession(t *testing.T) {
+	firstClient := &recordingClient{browseChildren: map[string][]opcua.AddressNode{
+		"ns=2;s=Area": {{NodeID: "ns=2;s=ExistingPump", DisplayName: "Existing Pump", BrowseName: "2:ExistingPump", NodeClass: "Variable"}},
+	}}
+	failedClient := &recordingClient{connectErr: errors.New("dial failed")}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = firstClient
+	app.newClient = func() opcua.Client { return failedClient }
+	configureSearchSession(app, search.SessionOptions{BrowseInterval: time.Hour})
+
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://first.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+		t.Fatalf("first Connect() error = %v", err)
+	}
+	if _, err := app.BrowseChildren("ns=2;s=Area"); err != nil {
+		t.Fatalf("BrowseChildren() before reconnect error = %v", err)
+	}
+	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://failed.local:4840", AuthType: opcua.AuthAnonymous}); err == nil {
+		t.Fatal("second Connect() error = nil, want reconnect failure")
+	}
+	t.Cleanup(func() { _ = app.Disconnect() })
+
+	if safety := app.GetSessionSafety(); !safety.Connected {
+		t.Fatalf("GetSessionSafety() after failed reconnect = %#v, want existing connection preserved", safety)
+	}
+	view, err := app.SearchAddressSpace("Existing Pump")
+	if err != nil {
+		t.Fatalf("SearchAddressSpace() after failed reconnect error = %v", err)
+	}
+	if len(view.Results) != 1 || view.Results[0].Node.NodeID != "ns=2;s=ExistingPump" {
+		t.Fatalf("SearchAddressSpace() after failed reconnect = %#v, want existing session preserved", view)
+	}
+	if _, err := app.BrowseChildren("ns=2;s=Area"); err != nil {
+		t.Fatalf("BrowseChildren() after failed reconnect error = %v", err)
+	}
+	if requests := failedClient.recordedBrowseRequests(); len(requests) != 0 {
+		t.Fatalf("failed replacement client browse requests = %#v, want none", requests)
+	}
+}
+
+func TestReconnectKeepsOverlappingBackgroundBrowseOnPreviousClient(t *testing.T) {
+	firstClient := &blockingBrowseClient{started: make(chan struct{}), release: make(chan struct{})}
+	secondClient := &blockingConnectClient{started: make(chan struct{}), release: make(chan struct{})}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = firstClient
+	app.newClient = func() opcua.Client { return secondClient }
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://first.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
 		t.Fatalf("first Connect() error = %v", err)
 	}
 	<-firstClient.started
 
-	secondClient := &recordingClient{}
-	app.client = secondClient
-	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://second.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
+	reconnectDone := make(chan error, 1)
+	go func() {
+		reconnectDone <- app.Connect(ConnectionRequest{Endpoint: "opc.tcp://second.local:4840", AuthType: opcua.AuthAnonymous})
+	}()
+	<-secondClient.started
+	close(firstClient.release)
+	time.Sleep(20 * time.Millisecond)
+
+	if requests := secondClient.recordedBrowseRequests(); len(requests) != 0 {
+		t.Fatalf("replacement client browsed while Connect was in progress: %#v", requests)
+	}
+	close(secondClient.release)
+	if err := <-reconnectDone; err != nil {
 		t.Fatalf("second Connect() error = %v", err)
 	}
 	t.Cleanup(func() { _ = app.Disconnect() })
-	close(firstClient.release)
-	time.Sleep(20 * time.Millisecond)
 
 	view, err := app.SearchAddressSpace("StalePump")
 	if err != nil {
 		t.Fatalf("SearchAddressSpace() error = %v", err)
 	}
 	if len(view.Results) != 0 {
-		t.Fatalf("SearchAddressSpace() after reconnect = %#v, want previous indexer cancelled and metadata cleared", view)
+		t.Fatalf("SearchAddressSpace() after reconnect = %#v, want previous metadata cleared", view)
 	}
 }
 

@@ -2,6 +2,8 @@
 
 Issues and PRDs for this repo live as GitHub issues in `kevin-rieck/project-cobalt`. Use the `gh` CLI for all operations.
 
+External PRs are not a triage request surface. Triage skills should process issues, not pull requests, unless explicitly instructed by the user.
+
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.

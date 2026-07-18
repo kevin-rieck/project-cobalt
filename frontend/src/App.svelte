@@ -184,7 +184,7 @@
   let watchlist: WatchlistRow[] = (readmeScreenshotState?.watchlist as WatchlistRow[]) ?? []
   let sessionTrend: SessionTrendView = (readmeScreenshotState?.sessionTrend as SessionTrendView) ?? { nodes: [], points: [] }
   let focusedTrendNodeID = readmeScreenshotState?.focusedTrendNodeID ?? ''
-  let logs: DiagnosticLogEntry[] = []
+  let logs: DiagnosticLogEntry[] = (readmeScreenshotState?.logs as DiagnosticLogEntry[]) ?? []
   let toasts: { id: number; level: string; message: string }[] = []
   let searchQuery = readmeScreenshotState?.searchQuery ?? ''
   let searchView: AddressSpaceSearchView = (readmeScreenshotState?.searchView as AddressSpaceSearchView) ?? { query: '', results: [], status: 'Connect to an OPC UA Server to search browsed Address Space metadata.' }
@@ -215,14 +215,17 @@
   $: writeStatusWarning = inspection && !inspection.stale && inspection.value?.Status && !inspection.value.Status.includes('Good') ? `Current status is ${inspection.value.Status}; confirm the value is safe to change.` : ''
 
   onMount(async () => {
-    if (readmeScreenshotState) return
+    if (!readmeScreenshotState) {
+      logs = await GetDiagnosticLogs()
+      savedConnections = await GetSavedConnections()
+      const sessionSafety = await GetSessionSafety()
+      applySessionSafety(sessionSafety)
+      watchlist = await GetWatchlist()
+      sessionTrend = await GetSessionTrend(focusedTrendNodeID)
+    } else if (!readmeScreenshotState.receiveRuntimeEvents) {
+      return
+    }
 
-    logs = await GetDiagnosticLogs()
-    savedConnections = await GetSavedConnections()
-    const sessionSafety = await GetSessionSafety()
-    applySessionSafety(sessionSafety)
-    watchlist = await GetWatchlist()
-    sessionTrend = await GetSessionTrend(focusedTrendNodeID)
     const offInspection = EventsOn('variable-inspection-updated', (payload: Inspection | null) => {
       const previousNodeID = inspection?.node?.NodeID || ''
       inspection = payload
@@ -599,6 +602,11 @@
       serverTimestamp: inspection.value?.ServerTimestamp || ''
     }
     writeConfirmOpen = true
+    if (readmeScreenshotState?.confirmationInspectionUpdate) {
+      queueMicrotask(() => {
+        inspection = readmeScreenshotState.confirmationInspectionUpdate as Inspection
+      })
+    }
   }
 
   function closeWriteConfirmation() {
@@ -636,14 +644,21 @@
     if (isReadOnly) reasons.push('Read-Only Mode is active.')
     if (!current) return [...reasons, 'Select a Variable Node in Variable Node Inspection.']
     if (current.node.NodeClass !== 'Variable') reasons.push('Selected node is not a Variable Node.')
-    if (current.loadingDetails) reasons.push('Waiting for Variable Node metadata.')
-    if (current.detailsError) reasons.push(`Details failed to load: ${current.detailsError}`)
-    if (!current.details?.NodeID) reasons.push('Write availability cannot be determined until metadata loads.')
-    if (current.details?.ValueRank && current.details.ValueRank !== 'Scalar') reasons.push(`Only scalar Variable Node Writes are supported; ValueRank is ${current.details.ValueRank}.`)
-    if (current.details?.NodeID && !current.details.Writable) reasons.push(current.details.WriteAvailability || 'Effective metadata says this Variable Node is not writable in this session.')
-    if (current.details?.DataType && !isSupportedWriteDataType(current.details.DataType)) reasons.push(`Data type ${current.details.DataType} is not supported for Variable Node Write.`)
-    if (!current.details?.DataType) reasons.push('Data type is unavailable.')
-    if (current.stale || current.error || current.updateCount === 0) reasons.push('Current Live Value is stale or unavailable.')
+    if (current.loadingDetails) {
+      reasons.push('Write availability cannot yet be determined while Variable Node metadata is loading.')
+    } else if (current.detailsError) {
+      reasons.push('Write availability could not be determined because Variable Node metadata failed to load.')
+      reasons.push(`Details failed to load: ${current.detailsError}`)
+    } else if (!current.details?.NodeID) {
+      reasons.push('Write availability cannot yet be determined because Variable Node metadata is unavailable.')
+    } else {
+      if (current.details.ValueRank && current.details.ValueRank !== 'Scalar') reasons.push(`Only scalar Variable Node Writes are supported; ValueRank is ${current.details.ValueRank}.`)
+      if (!current.details.Writable) reasons.push(current.details.WriteAvailability || 'Effective metadata says this Variable Node is not writable in this session.')
+      if (current.details.DataType && !isSupportedWriteDataType(current.details.DataType)) reasons.push(`Data type ${current.details.DataType} is not supported for Variable Node Write.`)
+      if (!current.details.DataType) reasons.push('Data type is unavailable.')
+    }
+    if (current.stale) reasons.push('Current Live Value is stale.')
+    else if (current.error || current.updateCount === 0) reasons.push('Current Live Value is unavailable.')
     const parseError = parseWriteTargetError(current.details?.DataType || '', target)
     if (parseError) reasons.push(parseError)
     return reasons
@@ -1315,11 +1330,11 @@
 
   {#if writeConfirmOpen && inspection && writeConfirmationSnapshot}
     <div class="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-lg">
-      <div class="w-full max-w-2xl rounded-lg border border-outline-variant bg-surface p-lg shadow-2xl">
+      <div class="w-full max-w-2xl rounded-lg border border-outline-variant bg-surface p-lg shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="write-confirmation-heading">
         <div class="flex items-start justify-between gap-md">
           <div>
             <p class="label">Confirm Variable Node Write</p>
-            <h2 class="mt-xs text-2xl font-semibold">This changes the OPC UA Server</h2>
+            <h2 id="write-confirmation-heading" class="mt-xs text-2xl font-semibold">This changes the OPC UA Server</h2>
             <p class="mt-sm text-sm text-on-surface-variant">Review the current Live Value and Target Value. If the Live Value changes while this confirmation is open, confirmation is invalidated.</p>
           </div>
           <button class="rounded p-xs hover:bg-surface-container-high" on:click={closeWriteConfirmation} title="Cancel"><span class="material-symbols-outlined">close</span></button>

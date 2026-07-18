@@ -16,34 +16,31 @@ import (
 )
 
 const (
-	eventVariableInspectionUpdated    = "variable-inspection-updated"
-	eventWatchlistUpdated             = "watchlist-updated"
-	eventSessionTrendUpdated          = "session-trend-updated"
-	eventDiagnosticLogAppended        = "diagnostic-log-appended"
-	eventSessionSafetyUpdated         = "session-safety-updated"
-	defaultShallowIndexBrowseInterval = time.Second
-	defaultShallowIndexBrowseBudget   = 250
+	eventVariableInspectionUpdated = "variable-inspection-updated"
+	eventWatchlistUpdated          = "watchlist-updated"
+	eventSessionTrendUpdated       = "session-trend-updated"
+	eventDiagnosticLogAppended     = "diagnostic-log-appended"
+	eventSessionSafetyUpdated      = "session-safety-updated"
+	defaultDisconnectCloseTimeout  = 2 * time.Second
 )
 
 // App is the Wails backend boundary for OPC UA Studio.
 type App struct {
 	ctx context.Context
 
-	mu                          sync.Mutex
-	client                      opcua.Client
-	inspections                 *session.InspectionSet
-	addressSpaceSearch          *search.Service
-	logs                        []DiagnosticLogEntry
-	savedConnections            []connections.SavedConnection
-	savedStore                  *connections.FileStore
-	connected                   bool
-	readOnlyMode                bool
-	trendNotifyPending          bool
-	shallowIndexCancel          context.CancelFunc
-	shallowIndexPrioritize      chan []opcua.AddressNode
-	shallowIndexBrowseInterval  time.Duration
-	shallowIndexBrowseBudget    int
-	shallowIndexBudgetExhausted bool
+	mu                           sync.Mutex
+	client                       opcua.Client
+	newClient                    func() opcua.Client
+	inspections                  *session.InspectionSet
+	addressSpaceSearchSession    *search.Session
+	newAddressSpaceSearchSession func(context.Context, search.Browser) *search.Session
+	logs                         []DiagnosticLogEntry
+	savedConnections             []connections.SavedConnection
+	savedStore                   *connections.FileStore
+	connected                    bool
+	readOnlyMode                 bool
+	trendNotifyPending           bool
+	disconnectCloseTimeout       time.Duration
 }
 
 // NewApp creates a new App application struct.
@@ -52,7 +49,7 @@ func NewApp() *App {
 }
 
 func NewAppWithSavedConnectionStore(path string) *App {
-	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), addressSpaceSearch: search.NewService(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, readOnlyMode: true, shallowIndexBrowseInterval: defaultShallowIndexBrowseInterval, shallowIndexBrowseBudget: defaultShallowIndexBrowseBudget}
+	return &App{client: opcua.NewClient(), newClient: opcua.NewClient, inspections: session.NewInspectionSet(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, readOnlyMode: true, disconnectCloseTimeout: defaultDisconnectCloseTimeout}
 }
 
 // startup is called when the app starts. The context is saved so we can emit runtime events.
@@ -131,10 +128,6 @@ type VariableNodeWriteResult struct {
 	Status      string          `json:"status"`
 	ReadBack    opcua.LiveValue `json:"readBack"`
 	Warning     string          `json:"warning"`
-}
-
-func objectsRootNode() opcua.AddressNode {
-	return opcua.AddressNode{NodeID: "i=85", DisplayName: "Objects", BrowseName: "Objects", NodeClass: "Object"}
 }
 
 func (a *App) GetSessionSafety() SessionSafetyView {
@@ -250,7 +243,24 @@ func (a *App) Connect(request ConnectionRequest) error {
 	if request.ServerThumbprint != "" {
 		a.appendLog("info", fmt.Sprintf("Selected server certificate thumbprint: %s", request.ServerThumbprint))
 	}
-	if err := a.client.Connect(a.ctx, connectRequest); err != nil {
+
+	a.mu.Lock()
+	previousClient := a.client
+	clientToConnect := previousClient
+	reconnecting := a.connected
+	if reconnecting {
+		newClient := a.newClient
+		if newClient == nil {
+			newClient = opcua.NewClient
+		}
+		clientToConnect = newClient()
+	}
+	a.mu.Unlock()
+
+	if err := clientToConnect.Connect(a.ctx, connectRequest); err != nil {
+		if reconnecting {
+			_ = a.closeClient(clientToConnect)
+		}
 		a.appendLog("error", fmt.Sprintf("Connection failed: %v", err))
 		return err
 	}
@@ -268,16 +278,20 @@ func (a *App) Connect(request ConnectionRequest) error {
 		}
 	}
 	a.mu.Lock()
-	a.cancelShallowAddressSpaceIndexingLocked()
+	a.stopAddressSpaceSearchSessionLocked()
+	a.client = clientToConnect
 	a.connected = true
 	a.readOnlyMode = true
 	a.inspections = session.NewInspectionSet()
-	a.addressSpaceSearch.Reset()
-	a.shallowIndexBudgetExhausted = false
-	a.addressSpaceSearch.AddNodes([]opcua.AddressNode{objectsRootNode()})
-	a.startShallowAddressSpaceIndexingLocked()
+	a.addressSpaceSearchSession = a.startAddressSpaceSearchSessionLocked()
 	safety := a.sessionSafetyLocked()
 	a.mu.Unlock()
+
+	if reconnecting {
+		if closeErr := a.closeClient(previousClient); closeErr != nil {
+			a.appendLog("error", fmt.Sprintf("Closing previous OPC UA client after reconnect failed: %v", closeErr))
+		}
+	}
 	a.emitSessionSafetyUpdated(safety)
 	a.emitInspection(nil)
 	a.emitWatchlist()
@@ -310,173 +324,84 @@ func (a *App) Disconnect() error {
 	a.appendLog("info", "Disconnecting")
 
 	a.mu.Lock()
-	a.cancelShallowAddressSpaceIndexingLocked()
-	a.mu.Unlock()
-
-	var closeErr error
-	if closeErr = a.client.Close(a.ctx); closeErr != nil {
-		a.appendLog("error", fmt.Sprintf("Disconnect failed: %v", closeErr))
-	}
-
-	a.mu.Lock()
+	a.stopAddressSpaceSearchSessionLocked()
+	clientToClose := a.client
 	a.client = opcua.NewClient()
 	a.inspections = session.NewInspectionSet()
-	a.addressSpaceSearch.Reset()
-	a.shallowIndexBudgetExhausted = false
 	a.connected = false
 	a.readOnlyMode = true
 	safety := a.sessionSafetyLocked()
 	a.mu.Unlock()
+
 	a.emitSessionSafetyUpdated(safety)
 	a.emitInspection(nil)
 	a.emitWatchlist()
 	a.emitSessionTrendUpdated()
+
+	if closeErr := a.closeClient(clientToClose); closeErr != nil {
+		a.appendLog("error", fmt.Sprintf("Disconnect failed: %v", closeErr))
+	}
 	a.appendLog("info", "Disconnected")
 	return nil
 }
 
-func (a *App) startShallowAddressSpaceIndexingLocked() {
-	base := a.ctx
-	if base == nil {
-		base = context.Background()
+func (a *App) closeClient(client opcua.Client) error {
+	closeTimeout := a.disconnectCloseTimeout
+	if closeTimeout <= 0 {
+		closeTimeout = defaultDisconnectCloseTimeout
 	}
-	ctx, cancel := context.WithCancel(base)
-	prioritize := make(chan []opcua.AddressNode, 128)
-	a.shallowIndexCancel = cancel
-	a.shallowIndexPrioritize = prioritize
-	client := a.client
-	interval := a.shallowIndexBrowseInterval
-	if interval <= 0 {
-		interval = defaultShallowIndexBrowseInterval
+	closeBase := a.ctx
+	if closeBase == nil {
+		closeBase = context.Background()
 	}
-	budget := a.shallowIndexBrowseBudget
-	if budget <= 0 {
-		budget = defaultShallowIndexBrowseBudget
-	}
-	go a.runShallowAddressSpaceIndexing(ctx, client, interval, budget, prioritize)
-}
+	closeCtx, cancelClose := context.WithTimeout(closeBase, closeTimeout)
+	defer cancelClose()
 
-func (a *App) cancelShallowAddressSpaceIndexingLocked() {
-	if a.shallowIndexCancel != nil {
-		a.shallowIndexCancel()
-		a.shallowIndexCancel = nil
-		a.shallowIndexPrioritize = nil
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- client.Close(closeCtx) }()
+	select {
+	case err := <-closeDone:
+		return err
+	case <-closeCtx.Done():
+		return fmt.Errorf("timed out closing OPC UA client after %s", closeTimeout)
 	}
 }
 
-func (a *App) runShallowAddressSpaceIndexing(ctx context.Context, client opcua.Client, interval time.Duration, browseBudget int, prioritize chan []opcua.AddressNode) {
-	budgetExhausted := false
-	defer func() { a.finishShallowAddressSpaceIndexing(prioritize, budgetExhausted) }()
-	priorityQueue := []string{}
-	backgroundQueue := []string{objectsRootNode().NodeID}
-	seen := map[string]bool{objectsRootNode().NodeID: true}
-	firstBrowse := true
-	browseCount := 0
+func (a *App) startAddressSpaceSearchSessionLocked() *search.Session {
+	var searchSession *search.Session
+	if a.newAddressSpaceSearchSession != nil {
+		searchSession = a.newAddressSpaceSearchSession(a.ctx, a.client)
+	} else {
+		searchSession = search.NewSession(a.ctx, a.client)
+	}
+	go a.consumeAddressSpaceSearchEvents(searchSession)
+	return searchSession
+}
 
-	for {
-		drainShallowIndexPriorityRequests(prioritize, &priorityQueue, seen)
-		if len(priorityQueue) == 0 && len(backgroundQueue) == 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case nodes := <-prioritize:
-				enqueueShallowIndexParentNodes(nodes, &priorityQueue, seen)
-				continue
-			}
-		}
-
-		if !firstBrowse {
-			timer := time.NewTimer(interval)
-			waiting := true
-			for waiting {
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return
-				case nodes := <-prioritize:
-					enqueueShallowIndexParentNodes(nodes, &priorityQueue, seen)
-				case <-timer.C:
-					waiting = false
-				}
-			}
-		}
-		firstBrowse = false
-
-		fromPriority := len(priorityQueue) > 0
-		nodeID := ""
-		if fromPriority {
-			nodeID = priorityQueue[0]
-			priorityQueue = priorityQueue[1:]
-		} else {
-			nodeID = backgroundQueue[0]
-			backgroundQueue = backgroundQueue[1:]
-		}
-		if browseCount >= browseBudget {
-			budgetExhausted = true
-			return
-		}
-		browseCount++
-		children, err := client.BrowseChildren(ctx, nodeID)
-		if err != nil {
-			if ctx.Err() == nil {
-				a.appendLog("error", fmt.Sprintf("Shallow Address Space Indexing browse failed for %s: %v", nodeID, err))
-			}
+func (a *App) consumeAddressSpaceSearchEvents(searchSession *search.Session) {
+	for event := range searchSession.Events() {
+		a.mu.Lock()
+		isCurrentSession := a.addressSpaceSearchSession == searchSession
+		a.mu.Unlock()
+		if !isCurrentSession {
 			continue
 		}
-		if ctx.Err() != nil {
-			return
-		}
-		a.addressSpaceSearch.AddNodes(children)
-		if fromPriority {
-			enqueueShallowIndexParentNodes(children, &priorityQueue, seen)
-		} else {
-			enqueueShallowIndexParentNodes(children, &backgroundQueue, seen)
-		}
-		if browseCount >= browseBudget {
-			budgetExhausted = len(priorityQueue) > 0 || len(backgroundQueue) > 0
-			return
+
+		switch event := event.(type) {
+		case search.BackgroundBrowseFailed:
+			a.appendLog("error", fmt.Sprintf("Shallow Address Space Indexing browse failed for %s: %v", event.NodeID, event.Err))
+		case search.PriorityQueueOverflow:
+			a.appendLog("error", fmt.Sprintf("Shallow Address Space Indexing priority queue is full; %d parent nodes were not prioritized", event.DroppedParentCount))
+		case search.IndexingBudgetExhausted:
+			a.appendLog("info", fmt.Sprintf("Shallow Address Space Indexing reached its session budget after %d browse requests", event.BrowseCount))
 		}
 	}
 }
 
-func (a *App) finishShallowAddressSpaceIndexing(prioritize chan []opcua.AddressNode, budgetExhausted bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.shallowIndexPrioritize == prioritize {
-		a.shallowIndexCancel = nil
-		a.shallowIndexPrioritize = nil
-		a.shallowIndexBudgetExhausted = budgetExhausted
-	}
-}
-
-func drainShallowIndexPriorityRequests(prioritize <-chan []opcua.AddressNode, priorityQueue *[]string, seen map[string]bool) {
-	for {
-		select {
-		case nodes := <-prioritize:
-			enqueueShallowIndexParentNodes(nodes, priorityQueue, seen)
-		default:
-			return
-		}
-	}
-}
-
-func enqueueShallowIndexParentNodes(nodes []opcua.AddressNode, queue *[]string, seen map[string]bool) {
-	for _, node := range nodes {
-		nodeID := strings.TrimSpace(node.NodeID)
-		if nodeID == "" || seen[nodeID] || !isShallowIndexParentNode(node) {
-			continue
-		}
-		seen[nodeID] = true
-		*queue = append(*queue, nodeID)
-	}
-}
-
-func isShallowIndexParentNode(node opcua.AddressNode) bool {
-	switch node.NodeClass {
-	case "Object", "View":
-		return true
-	default:
-		return false
+func (a *App) stopAddressSpaceSearchSessionLocked() {
+	if a.addressSpaceSearchSession != nil {
+		a.addressSpaceSearchSession.Stop()
+		a.addressSpaceSearchSession = nil
 	}
 }
 
@@ -485,52 +410,32 @@ func (a *App) BrowseChildren(nodeID string) ([]opcua.AddressNode, error) {
 		nodeID = "i=85"
 	}
 	a.appendLog("info", fmt.Sprintf("Browsing children of %s", nodeID))
-	children, err := a.client.BrowseChildren(a.ctx, nodeID)
+	a.mu.Lock()
+	searchSession := a.addressSpaceSearchSession
+	a.mu.Unlock()
+	if searchSession == nil {
+		err := fmt.Errorf("connect to an OPC UA Server to browse Address Space children")
+		a.appendLog("error", fmt.Sprintf("Browse failed for %s: %v", nodeID, err))
+		return nil, err
+	}
+	children, err := searchSession.BrowseChildren(nodeID)
 	if err != nil {
 		a.appendLog("error", fmt.Sprintf("Browse failed for %s: %v", nodeID, err))
 		return nil, err
 	}
-	a.addressSpaceSearch.AddNodes(children)
-	a.prioritizeShallowAddressSpaceIndexing(children)
 	a.appendLog("info", fmt.Sprintf("Browsed %d children of %s", len(children), nodeID))
 	return children, nil
-}
-
-func (a *App) prioritizeShallowAddressSpaceIndexing(nodes []opcua.AddressNode) {
-	a.mu.Lock()
-	prioritize := a.shallowIndexPrioritize
-	a.mu.Unlock()
-	if prioritize == nil {
-		return
-	}
-	select {
-	case prioritize <- nodes:
-	default:
-		a.appendLog("error", "Shallow Address Space Indexing priority queue is full")
-	}
 }
 
 func (a *App) SearchAddressSpace(query string) (search.AddressSpaceSearchView, error) {
 	a.mu.Lock()
 	connected := a.connected
-	indexingActive := a.shallowIndexPrioritize != nil
-	indexingBudgetExhausted := a.shallowIndexBudgetExhausted
+	searchSession := a.addressSpaceSearchSession
 	a.mu.Unlock()
-	if !connected {
+	if !connected || searchSession == nil {
 		return search.AddressSpaceSearchView{Query: query, Results: []search.AddressSpaceSearchResult{}, Status: "Connect to an OPC UA Server to search browsed Address Space metadata."}, nil
 	}
-	view := a.addressSpaceSearch.Search(query)
-	view.Status = describeHybridAddressSpaceSearchStatus(view.Status)
-	if indexingActive {
-		view.Status = view.Status + " Shallow Address Space Indexing is active; indexed coverage is still expanding."
-	} else if indexingBudgetExhausted {
-		view.Status = view.Status + " Shallow Address Space Indexing reached its session budget; some Address Space areas may not be indexed."
-	}
-	return view, nil
-}
-
-func describeHybridAddressSpaceSearchStatus(status string) string {
-	return strings.ReplaceAll(status, "browsed Address Space metadata", "browsed and shallow-indexed Address Space metadata")
+	return searchSession.Search(query), nil
 }
 
 func (a *App) InspectVariableNode(node opcua.AddressNode) error {

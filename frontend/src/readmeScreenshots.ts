@@ -60,6 +60,60 @@ const inspection = {
   detailsError: ''
 }
 
+const changedInspection = {
+  ...inspection,
+  value: { ...inspection.value, Value: '84.0', SourceTimestamp: later, ServerTimestamp: later },
+  updateCount: inspection.updateCount + 1
+}
+
+function inspectionForRequest(requested: string): typeof inspection {
+  switch (requested) {
+    case 'write-metadata-loading':
+      return {
+        ...inspection,
+        details: { ...inspection.details, NodeID: '', DataType: '' },
+        loadingDetails: true
+      }
+    case 'write-metadata-failed':
+      return {
+        ...inspection,
+        details: { ...inspection.details, NodeID: '', DataType: '' },
+        detailsError: 'BadAttributeIdInvalid'
+      }
+    case 'write-metadata-unavailable':
+      return {
+        ...inspection,
+        details: { ...inspection.details, NodeID: '', DataType: '' }
+      }
+    case 'write-live-value-stale':
+      return { ...inspection, stale: true }
+    case 'write-live-value-unavailable':
+      return {
+        ...inspection,
+        value: { Value: '', Status: '', SourceTimestamp: '', ServerTimestamp: '' },
+        updateCount: 0
+      }
+    case 'write-status-warning':
+      return { ...inspection, value: { ...inspection.value, Status: 'UncertainLastUsableValue' } }
+    case 'write-data-type-unsupported':
+      return { ...inspection, details: { ...inspection.details, DataType: 'DateTime' } }
+    case 'write-value-rank-non-scalar':
+      return { ...inspection, details: { ...inspection.details, ValueRank: 'OneDimension' } }
+    case 'write-metadata-non-writable':
+      return {
+        ...inspection,
+        details: {
+          ...inspection.details,
+          UserAccessLevel: 'CurrentRead',
+          Writable: false,
+          WriteAvailability: 'Read-only in this session'
+        }
+      }
+    default:
+      return inspection
+  }
+}
+
 const watchlist = [
   { node: nodes.temp, value: { Value: '83.7', Status: 'Good', SourceTimestamp: now, ServerTimestamp: now }, dataType: 'Double', engineeringUnit: '°C', stale: false, outOfRange: '', updateCount: 184, error: '', detailsError: '' },
   { node: nodes.pressure, value: { Value: '6.8', Status: 'Good', SourceTimestamp: now, ServerTimestamp: now }, dataType: 'Float', engineeringUnit: 'bar', stale: false, outOfRange: '', updateCount: 177, error: '', detailsError: '' },
@@ -99,6 +153,9 @@ export type ReadmeScreenshotState = {
   tree: typeof tree
   selectedNodeID: string
   inspection: typeof inspection
+  confirmationInspectionUpdate: typeof inspection | null
+  logs: Array<{ timestamp: string; level: string; message: string }>
+  receiveRuntimeEvents: boolean
   watchlist: typeof watchlist
   sessionTrend: typeof sessionTrend
   focusedTrendNodeID: string
@@ -133,11 +190,14 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
   return {
     activeTab: tabByRequest[requested] || 'address-space',
     connected: true,
-    readOnlyMode: true,
+    readOnlyMode: !requested.startsWith('write-') || requested === 'write-read-only',
     currentConnection: 'Control Gateway',
     tree,
     selectedNodeID: nodes.temp.NodeID,
-    inspection,
+    inspection: inspectionForRequest(requested),
+    confirmationInspectionUpdate: requested === 'write-confirmation-live-value-change' ? changedInspection : null,
+    logs: [],
+    receiveRuntimeEvents: requested === 'write-feedback-events',
     watchlist,
     sessionTrend,
     focusedTrendNodeID: nodes.temp.NodeID,

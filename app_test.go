@@ -16,9 +16,6 @@ import (
 
 func configureSearchSession(app *App, options search.SessionOptions) {
 	app.newAddressSpaceSearchSession = func(ctx context.Context, browser search.Browser) *search.Session {
-		options.ReportBrowseError = func(nodeID string, err error) {
-			app.appendLog("error", "Shallow Address Space Indexing browse failed for "+nodeID+": "+err.Error())
-		}
 		return search.NewSession(ctx, browser, options)
 	}
 }
@@ -666,13 +663,9 @@ func TestWriteVariableNodeValueReportsFailureAndReadBackMismatch(t *testing.T) {
 
 func TestBackgroundShallowAddressSpaceIndexingBrowseFailureRecordsDiagnostic(t *testing.T) {
 	client := &recordingClient{
-		browseChildren: map[string][]opcua.AddressNode{
-			"i=85": {{NodeID: "ns=2;s=BadArea", DisplayName: "Bad Area", BrowseName: "2:BadArea", NodeClass: "Object"}},
-		},
-		browseErrors: map[string]error{"ns=2;s=BadArea": errors.New("access denied")},
+		browseErrors: map[string]error{"i=85": errors.New("access denied")},
 	}
 	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
-	configureSearchSession(app, search.SessionOptions{BrowseInterval: 10 * time.Millisecond})
 	app.client = client
 
 	if err := app.Connect(ConnectionRequest{Endpoint: "opc.tcp://gateway.local:4840", AuthType: opcua.AuthAnonymous}); err != nil {
@@ -683,7 +676,7 @@ func TestBackgroundShallowAddressSpaceIndexingBrowseFailureRecordsDiagnostic(t *
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		for _, entry := range app.GetDiagnosticLogs() {
-			if strings.Contains(entry.Message, "Shallow Address Space Indexing browse failed for ns=2;s=BadArea") && strings.Contains(entry.Message, "access denied") {
+			if strings.Contains(entry.Message, "Shallow Address Space Indexing browse failed for i=85") && strings.Contains(entry.Message, "access denied") {
 				return
 			}
 		}

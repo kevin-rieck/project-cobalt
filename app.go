@@ -343,14 +343,34 @@ func (a *App) closeClientForDisconnect(client opcua.Client) error {
 }
 
 func (a *App) startAddressSpaceSearchSessionLocked() *search.Session {
+	var searchSession *search.Session
 	if a.newAddressSpaceSearchSession != nil {
-		return a.newAddressSpaceSearchSession(a.ctx, a.client)
+		searchSession = a.newAddressSpaceSearchSession(a.ctx, a.client)
+	} else {
+		searchSession = search.NewSession(a.ctx, a.client)
 	}
-	return search.NewSession(a.ctx, a.client, search.SessionOptions{
-		ReportBrowseError: func(nodeID string, err error) {
-			a.appendLog("error", fmt.Sprintf("Shallow Address Space Indexing browse failed for %s: %v", nodeID, err))
-		},
-	})
+	go a.consumeAddressSpaceSearchEvents(searchSession)
+	return searchSession
+}
+
+func (a *App) consumeAddressSpaceSearchEvents(searchSession *search.Session) {
+	for event := range searchSession.Events() {
+		a.mu.Lock()
+		isCurrentSession := a.addressSpaceSearchSession == searchSession
+		a.mu.Unlock()
+		if !isCurrentSession {
+			continue
+		}
+
+		switch event := event.(type) {
+		case search.BackgroundBrowseFailed:
+			a.appendLog("error", fmt.Sprintf("Shallow Address Space Indexing browse failed for %s: %v", event.NodeID, event.Err))
+		case search.PriorityQueueOverflow:
+			a.appendLog("error", fmt.Sprintf("Shallow Address Space Indexing priority queue is full; %d parent nodes were not prioritized", event.DroppedParentCount))
+		case search.IndexingBudgetExhausted:
+			a.appendLog("info", fmt.Sprintf("Shallow Address Space Indexing reached its session budget after %d browse requests", event.BrowseCount))
+		}
+	}
 }
 
 func (a *App) stopAddressSpaceSearchSessionLocked() {

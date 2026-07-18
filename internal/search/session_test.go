@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -49,6 +50,95 @@ func (b *cancelAwareBrowser) BrowseChildren(ctx context.Context, _ string) ([]op
 	b.once.Do(func() { close(b.started) })
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+type failingBrowser struct {
+	err error
+}
+
+func (b *failingBrowser) BrowseChildren(_ context.Context, _ string) ([]opcua.AddressNode, error) {
+	return nil, b.err
+}
+
+func TestSessionEmitsBackgroundBrowseFailure(t *testing.T) {
+	browserErr := errors.New("access denied")
+	session := NewSession(context.Background(), &failingBrowser{err: browserErr})
+	defer session.Stop()
+
+	var events <-chan Event = session.Events()
+	select {
+	case event := <-events:
+		failure, ok := event.(BackgroundBrowseFailed)
+		if !ok {
+			t.Fatalf("event = %#v, want BackgroundBrowseFailed", event)
+		}
+		if failure.NodeID != objectsRootNodeID || !errors.Is(failure.Err, browserErr) {
+			t.Fatalf("BackgroundBrowseFailed = %#v, want Objects node and access denied", failure)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for background browse failure event")
+	}
+}
+
+func TestSessionEmitsIndexingBudgetExhausted(t *testing.T) {
+	browser := &recordingBrowser{children: map[string][]opcua.AddressNode{
+		objectsRootNodeID: {{NodeID: "ns=2;s=Area", NodeClass: "Object"}},
+	}}
+	session := NewSession(context.Background(), browser, SessionOptions{BrowseBudget: 1})
+	defer session.Stop()
+
+	select {
+	case event := <-session.Events():
+		exhausted, ok := event.(IndexingBudgetExhausted)
+		if !ok {
+			t.Fatalf("event = %#v, want IndexingBudgetExhausted", event)
+		}
+		if exhausted.BrowseCount != 1 {
+			t.Fatalf("IndexingBudgetExhausted.BrowseCount = %d, want 1", exhausted.BrowseCount)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for indexing budget exhausted event")
+	}
+}
+
+type rootBlockingBrowser struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (b *rootBlockingBrowser) BrowseChildren(ctx context.Context, nodeID string) ([]opcua.AddressNode, error) {
+	if nodeID == objectsRootNodeID {
+		b.once.Do(func() { close(b.started) })
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return []opcua.AddressNode{{NodeID: nodeID + "/child", NodeClass: "Object"}}, nil
+}
+
+func TestSessionEmitsPriorityQueueOverflow(t *testing.T) {
+	browser := &rootBlockingBrowser{started: make(chan struct{})}
+	session := NewSession(context.Background(), browser)
+	defer session.Stop()
+	<-browser.started
+
+	for i := 0; i < 10_000; i++ {
+		if _, err := session.BrowseChildren(fmt.Sprintf("ns=2;s=Area%d", i)); err != nil {
+			t.Fatalf("BrowseChildren() error = %v", err)
+		}
+		select {
+		case event := <-session.Events():
+			overflow, ok := event.(PriorityQueueOverflow)
+			if !ok {
+				t.Fatalf("event = %#v, want PriorityQueueOverflow", event)
+			}
+			if overflow.DroppedParentCount != 1 {
+				t.Fatalf("PriorityQueueOverflow.DroppedParentCount = %d, want 1", overflow.DroppedParentCount)
+			}
+			return
+		default:
+		}
+	}
+	t.Fatal("priority queue did not emit an overflow event")
 }
 
 func TestSessionStartsShallowAddressSpaceIndexing(t *testing.T) {

@@ -112,6 +112,9 @@ func NewClient() Client {
 type gopcuaClient struct {
 	client        *gopcua.Client
 	subscriptions []ValueSubscription
+	readFile      func(string) ([]byte, error)
+	getEndpoints  func(context.Context, string) ([]*ua.EndpointDescription, error)
+	connectClient func(*gopcua.Client, context.Context) error
 }
 
 func (c *gopcuaClient) DiscoverEndpoints(ctx context.Context, endpoint string) ([]Endpoint, error) {
@@ -138,13 +141,22 @@ func (c *gopcuaClient) Connect(ctx context.Context, request ConnectRequest) erro
 	if compactMessageSecurityMode(request.SecurityMode) != "None" && (request.ClientCertificatePath == "" || request.ClientPrivateKeyPath == "") {
 		return fmt.Errorf("secure endpoint requires client certificate and private key")
 	}
+	var clientPrivateKey *rsa.PrivateKey
 	if compactMessageSecurityMode(request.SecurityMode) != "None" {
-		if _, err := loadClientPrivateKey(request.ClientPrivateKeyPath); err != nil {
+		var err error
+		clientPrivateKey, err = loadClientPrivateKey(request.ClientPrivateKeyPath, c.privateKeyFileReader())
+		if err != nil {
 			return err
 		}
 	}
 	securityMode := ua.MessageSecurityModeFromString(request.SecurityMode)
-	endpoints, err := gopcua.GetEndpoints(ctx, request.Endpoint)
+	getEndpoints := c.getEndpoints
+	if getEndpoints == nil {
+		getEndpoints = func(ctx context.Context, endpoint string) ([]*ua.EndpointDescription, error) {
+			return gopcua.GetEndpoints(ctx, endpoint)
+		}
+	}
+	endpoints, err := getEndpoints(ctx, request.Endpoint)
 	if err != nil {
 		log.Printf("opcua: Connect endpoint discovery failed endpoint=%s error=%v", request.Endpoint, err)
 		return err
@@ -160,7 +172,7 @@ func (c *gopcuaClient) Connect(ctx context.Context, request ConnectRequest) erro
 	// the endpoint the Automation Engineer supplied.
 	ep.EndpointURL = request.Endpoint
 
-	opts, err := clientOptionsForConnectRequest(ep, request)
+	opts, err := clientOptionsForConnectRequest(ep, request, clientPrivateKey)
 	if err != nil {
 		log.Printf("opcua: client option validation failed endpointURL=%s error=%v", ep.EndpointURL, err)
 		return err
@@ -171,7 +183,13 @@ func (c *gopcuaClient) Connect(ctx context.Context, request ConnectRequest) erro
 		log.Printf("opcua: NewClient failed endpointURL=%s error=%v", ep.EndpointURL, err)
 		return err
 	}
-	if err := client.Connect(ctx); err != nil {
+	connectClient := c.connectClient
+	if connectClient == nil {
+		connectClient = func(client *gopcua.Client, ctx context.Context) error {
+			return client.Connect(ctx)
+		}
+	}
+	if err := connectClient(client, ctx); err != nil {
 		log.Printf("opcua: Connect failed endpointURL=%s error=%v", ep.EndpointURL, err)
 		return err
 	}
@@ -597,7 +615,7 @@ func rangeValue(value any) *ValueRange {
 	}
 }
 
-func clientOptionsForConnectRequest(ep *ua.EndpointDescription, request ConnectRequest) ([]gopcua.Option, error) {
+func clientOptionsForConnectRequest(ep *ua.EndpointDescription, request ConnectRequest, clientPrivateKey *rsa.PrivateKey) ([]gopcua.Option, error) {
 	authType := ua.UserTokenTypeAnonymous
 	authOption := gopcua.AuthAnonymous()
 	if request.AuthType == AuthUsername {
@@ -610,13 +628,12 @@ func clientOptionsForConnectRequest(ep *ua.EndpointDescription, request ConnectR
 		gopcua.ProductURI("urn:opcua-studio"),
 	}
 	if compactMessageSecurityMode(request.SecurityMode) != "None" {
-		key, err := loadClientPrivateKey(request.ClientPrivateKeyPath)
-		if err != nil {
-			return nil, err
+		if clientPrivateKey == nil {
+			return nil, fmt.Errorf("secure endpoint requires a validated Client Private Key")
 		}
 		opts = append(opts,
 			gopcua.CertificateFile(request.ClientCertificatePath),
-			gopcua.PrivateKey(key),
+			gopcua.PrivateKey(clientPrivateKey),
 		)
 	}
 	opts = append(opts,
@@ -626,8 +643,15 @@ func clientOptionsForConnectRequest(ep *ua.EndpointDescription, request ConnectR
 	return opts, nil
 }
 
-func loadClientPrivateKey(filename string) (*rsa.PrivateKey, error) {
-	b, err := os.ReadFile(filename)
+func (c *gopcuaClient) privateKeyFileReader() func(string) ([]byte, error) {
+	if c.readFile != nil {
+		return c.readFile
+	}
+	return os.ReadFile
+}
+
+func loadClientPrivateKey(filename string, readFile func(string) ([]byte, error)) (*rsa.PrivateKey, error) {
+	b, err := readFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load Client Private Key: %w", err)
 	}

@@ -30,6 +30,7 @@ type App struct {
 
 	mu                           sync.Mutex
 	client                       opcua.Client
+	newClient                    func() opcua.Client
 	inspections                  *session.InspectionSet
 	addressSpaceSearchSession    *search.Session
 	newAddressSpaceSearchSession func(context.Context, search.Browser) *search.Session
@@ -48,7 +49,7 @@ func NewApp() *App {
 }
 
 func NewAppWithSavedConnectionStore(path string) *App {
-	return &App{client: opcua.NewClient(), inspections: session.NewInspectionSet(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, readOnlyMode: true, disconnectCloseTimeout: defaultDisconnectCloseTimeout}
+	return &App{client: opcua.NewClient(), newClient: opcua.NewClient, inspections: session.NewInspectionSet(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, readOnlyMode: true, disconnectCloseTimeout: defaultDisconnectCloseTimeout}
 }
 
 // startup is called when the app starts. The context is saved so we can emit runtime events.
@@ -242,7 +243,24 @@ func (a *App) Connect(request ConnectionRequest) error {
 	if request.ServerThumbprint != "" {
 		a.appendLog("info", fmt.Sprintf("Selected server certificate thumbprint: %s", request.ServerThumbprint))
 	}
-	if err := a.client.Connect(a.ctx, connectRequest); err != nil {
+
+	a.mu.Lock()
+	previousClient := a.client
+	clientToConnect := previousClient
+	reconnecting := a.connected
+	if reconnecting {
+		newClient := a.newClient
+		if newClient == nil {
+			newClient = opcua.NewClient
+		}
+		clientToConnect = newClient()
+	}
+	a.mu.Unlock()
+
+	if err := clientToConnect.Connect(a.ctx, connectRequest); err != nil {
+		if reconnecting {
+			_ = a.closeClient(clientToConnect)
+		}
 		a.appendLog("error", fmt.Sprintf("Connection failed: %v", err))
 		return err
 	}
@@ -261,12 +279,19 @@ func (a *App) Connect(request ConnectionRequest) error {
 	}
 	a.mu.Lock()
 	a.stopAddressSpaceSearchSessionLocked()
+	a.client = clientToConnect
 	a.connected = true
 	a.readOnlyMode = true
 	a.inspections = session.NewInspectionSet()
 	a.addressSpaceSearchSession = a.startAddressSpaceSearchSessionLocked()
 	safety := a.sessionSafetyLocked()
 	a.mu.Unlock()
+
+	if reconnecting {
+		if closeErr := a.closeClient(previousClient); closeErr != nil {
+			a.appendLog("error", fmt.Sprintf("Closing previous OPC UA client after reconnect failed: %v", closeErr))
+		}
+	}
 	a.emitSessionSafetyUpdated(safety)
 	a.emitInspection(nil)
 	a.emitWatchlist()
@@ -313,14 +338,14 @@ func (a *App) Disconnect() error {
 	a.emitWatchlist()
 	a.emitSessionTrendUpdated()
 
-	if closeErr := a.closeClientForDisconnect(clientToClose); closeErr != nil {
+	if closeErr := a.closeClient(clientToClose); closeErr != nil {
 		a.appendLog("error", fmt.Sprintf("Disconnect failed: %v", closeErr))
 	}
 	a.appendLog("info", "Disconnected")
 	return nil
 }
 
-func (a *App) closeClientForDisconnect(client opcua.Client) error {
+func (a *App) closeClient(client opcua.Client) error {
 	closeTimeout := a.disconnectCloseTimeout
 	if closeTimeout <= 0 {
 		closeTimeout = defaultDisconnectCloseTimeout

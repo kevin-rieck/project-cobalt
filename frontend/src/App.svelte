@@ -214,44 +214,51 @@
   $: writeRangeWarning = writeTargetRangeWarning(inspection, writeTargetValue)
   $: writeStatusWarning = inspection && !inspection.stale && inspection.value?.Status && !inspection.value.Status.includes('Good') ? `Current status is ${inspection.value.Status}; confirm the value is safe to change.` : ''
 
-  onMount(async () => {
-    if (!readmeScreenshotState) {
-      logs = await GetDiagnosticLogs()
-      savedConnections = await GetSavedConnections()
-      const sessionSafety = await GetSessionSafety()
-      applySessionSafety(sessionSafety)
-      watchlist = await GetWatchlist()
-      sessionTrend = await GetSessionTrend(focusedTrendNodeID)
-    } else if (!readmeScreenshotState.receiveRuntimeEvents) {
-      return
+  onMount(() => {
+    let disposed = false
+    let eventUnsubscribers: Array<() => void> = []
+
+    async function initialize() {
+      if (!readmeScreenshotState) {
+        logs = await GetDiagnosticLogs()
+        savedConnections = await GetSavedConnections()
+        const sessionSafety = await GetSessionSafety()
+        applySessionSafety(sessionSafety)
+        watchlist = await GetWatchlist()
+        sessionTrend = await GetSessionTrend(focusedTrendNodeID)
+      } else if (!readmeScreenshotState.receiveRuntimeEvents) {
+        return
+      }
+
+      if (disposed) return
+      eventUnsubscribers = [
+        EventsOn('variable-inspection-updated', (payload: Inspection | null) => {
+          const previousNodeID = inspection?.node?.NodeID || ''
+          inspection = payload
+          if (previousNodeID && payload?.node?.NodeID !== previousNodeID) resetWriteState()
+        }),
+        EventsOn('watchlist-updated', (payload: WatchlistRow[]) => {
+          watchlist = payload || []
+          if (watchlist.length > 100) {
+            addToast('info', 'Watchlist has more than 100 Variable Nodes. Consider removing nodes you no longer need.')
+          }
+        }),
+        EventsOn('session-trend-updated', async () => {
+          await refreshSessionTrend()
+        }),
+        EventsOn('diagnostic-log-appended', (entry: DiagnosticLogEntry) => {
+          logs = [...logs, entry].slice(-500)
+        }),
+        EventsOn('session-safety-updated', (payload: SessionSafety) => {
+          applySessionSafety(payload)
+        })
+      ]
     }
 
-    const offInspection = EventsOn('variable-inspection-updated', (payload: Inspection | null) => {
-      const previousNodeID = inspection?.node?.NodeID || ''
-      inspection = payload
-      if (previousNodeID && payload?.node?.NodeID !== previousNodeID) resetWriteState()
-    })
-    const offWatchlist = EventsOn('watchlist-updated', (payload: WatchlistRow[]) => {
-      watchlist = payload || []
-      if (watchlist.length > 100) {
-        addToast('info', 'Watchlist has more than 100 Variable Nodes. Consider removing nodes you no longer need.')
-      }
-    })
-    const offTrend = EventsOn('session-trend-updated', async () => {
-      await refreshSessionTrend()
-    })
-    const offLog = EventsOn('diagnostic-log-appended', (entry: DiagnosticLogEntry) => {
-      logs = [...logs, entry].slice(-500)
-    })
-    const offSessionSafety = EventsOn('session-safety-updated', (payload: SessionSafety) => {
-      applySessionSafety(payload)
-    })
+    void initialize()
     return () => {
-      offInspection()
-      offWatchlist()
-      offTrend()
-      offLog()
-      offSessionSafety()
+      disposed = true
+      eventUnsubscribers.forEach(unsubscribe => unsubscribe())
     }
   })
 
@@ -378,7 +385,7 @@
       SecurityMode: saved.securityMode,
       SecurityLevel: 0,
       UserTokenTypes: saved.authType === 'UserName' ? ['UserName'] : ['Anonymous'],
-      ServerThumbprint: saved.serverCertificateThumbprint
+      ServerThumbprint: saved.serverCertificateThumbprint || ''
     }]
     selectedEndpoint = 0
     authType = saved.authType === 'UserName' ? 'UserName' : 'Anonymous'

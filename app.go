@@ -117,6 +117,11 @@ type WatchlistRowView struct {
 	DetailsError    string            `json:"detailsError"`
 }
 
+type MethodNodeRequest struct {
+	ObjectNodeID string `json:"objectNodeID"`
+	MethodNodeID string `json:"methodNodeID"`
+}
+
 type VariableNodeWriteRequest struct {
 	NodeID      string `json:"nodeID"`
 	TargetValue string `json:"targetValue"`
@@ -436,6 +441,27 @@ func (a *App) SearchAddressSpace(query string) (search.AddressSpaceSearchView, e
 		return search.AddressSpaceSearchView{Query: query, Results: []search.AddressSpaceSearchResult{}, Status: "Connect to an OPC UA Server to search browsed Address Space metadata."}, nil
 	}
 	return searchSession.Search(query), nil
+}
+
+func (a *App) GetMethodDetails(request MethodNodeRequest) (opcua.MethodDetails, error) {
+	a.mu.Lock()
+	connected := a.connected
+	client := a.client
+	a.mu.Unlock()
+	if !connected {
+		return opcua.MethodDetails{}, fmt.Errorf("Method inspection requires a connected session")
+	}
+	if strings.TrimSpace(request.ObjectNodeID) == "" || strings.TrimSpace(request.MethodNodeID) == "" {
+		return opcua.MethodDetails{}, fmt.Errorf("Method inspection requires Object and Method Node IDs")
+	}
+
+	a.appendLog("info", fmt.Sprintf("Reading Method details for Object Node %s Method Node %s", request.ObjectNodeID, request.MethodNodeID))
+	details, err := client.ReadMethodDetails(a.ctx, request.ObjectNodeID, request.MethodNodeID)
+	if err != nil {
+		a.appendLog("error", fmt.Sprintf("Reading Method details failed for Object Node %s Method Node %s: %v", request.ObjectNodeID, request.MethodNodeID, err))
+		return opcua.MethodDetails{}, err
+	}
+	return details, nil
 }
 
 func (a *App) InspectVariableNode(node opcua.AddressNode) error {

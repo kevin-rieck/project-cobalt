@@ -1,6 +1,7 @@
 type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
 
 type AddressNode = {
+  ParentNodeID?: string
   NodeID: string
   DisplayName: string
   BrowseName: string
@@ -18,7 +19,9 @@ const nodes = {
   temp: { NodeID: 'ns=2;s=Plant.Line1.Filler.Temperature', DisplayName: 'Filler Temperature', BrowseName: '2:FillerTemperature', NodeClass: 'Variable' },
   pressure: { NodeID: 'ns=2;s=Plant.Line1.Filler.Pressure', DisplayName: 'Bowl Pressure', BrowseName: '2:BowlPressure', NodeClass: 'Variable' },
   speed: { NodeID: 'ns=2;s=Plant.Line1.Conveyor.Speed', DisplayName: 'Conveyor Speed', BrowseName: '2:ConveyorSpeed', NodeClass: 'Variable' },
-  rejectCount: { NodeID: 'ns=2;s=Plant.Line1.RejectCount', DisplayName: 'Reject Count', BrowseName: '2:RejectCount', NodeClass: 'Variable' }
+  rejectCount: { NodeID: 'ns=2;s=Plant.Line1.RejectCount', DisplayName: 'Reject Count', BrowseName: '2:RejectCount', NodeClass: 'Variable' },
+  methods: { ParentNodeID: 'i=85', NodeID: 'ns=3;s=Demo.CTT.Methods', DisplayName: 'Methods', BrowseName: '3:Methods', NodeClass: 'Object' },
+  methodIO: { ParentNodeID: 'ns=3;s=Demo.CTT.Methods', NodeID: 'ns=3;s=Demo.CTT.Methods.MethodIO', DisplayName: 'MethodIO', BrowseName: '3:MethodIO', NodeClass: 'Method' }
 } satisfies Record<string, AddressNode>
 
 const tree = [
@@ -29,7 +32,9 @@ const tree = [
   { key: nodes.pressure.NodeID, node: nodes.pressure, depth: 3, expanded: false, childrenLoaded: false, loading: false, error: '' },
   { key: nodes.conveyor.NodeID, node: nodes.conveyor, depth: 2, expanded: true, childrenLoaded: true, loading: false, error: '' },
   { key: nodes.speed.NodeID, node: nodes.speed, depth: 3, expanded: false, childrenLoaded: false, loading: false, error: '' },
-  { key: nodes.rejectCount.NodeID, node: nodes.rejectCount, depth: 2, expanded: false, childrenLoaded: false, loading: false, error: '' }
+  { key: nodes.rejectCount.NodeID, node: nodes.rejectCount, depth: 2, expanded: false, childrenLoaded: false, loading: false, error: '' },
+  { key: nodes.methods.NodeID, node: nodes.methods, depth: 1, expanded: true, childrenLoaded: true, loading: false, error: '' },
+  { key: nodes.methodIO.NodeID, node: nodes.methodIO, depth: 2, expanded: false, childrenLoaded: true, loading: false, error: '' }
 ]
 
 const inspection = {
@@ -129,6 +134,14 @@ const searchResults = [nodes.temp, nodes.pressure, nodes.speed].map((node, index
   score: 100 - index * 7
 }))
 
+const methodSearchResults = [{
+  node: nodes.methodIO,
+  matchKind: 'DisplayName',
+  matchText: 'MethodIO',
+  source: 'Browsed Address Space metadata',
+  score: 100
+}]
+
 const sessionTrend = {
   nodes: [
     { node: nodes.temp, latestValue: '83.7 °C', status: 'Good', pointCount: 12 },
@@ -190,7 +203,7 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
   return {
     activeTab: tabByRequest[requested] || 'address-space',
     connected: true,
-    readOnlyMode: !requested.startsWith('write-') || requested === 'write-read-only',
+    readOnlyMode: requested === 'method-call-read-only' || (!requested.startsWith('write-') && !requested.startsWith('method-call')) || requested === 'write-read-only',
     currentConnection: 'Control Gateway',
     tree,
     selectedNodeID: nodes.temp.NodeID,
@@ -202,7 +215,9 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
     sessionTrend,
     focusedTrendNodeID: nodes.temp.NodeID,
     searchQuery: requested === 'connections' ? '' : 'filler',
-    searchView: { query: 'filler', results: searchResults, status: '3 Search Results found in browsed Address Space metadata.' },
+    searchView: requested.startsWith('method-call')
+      ? { query: 'method', results: methodSearchResults as typeof searchResults, status: '1 Search Result found in browsed Address Space metadata.' }
+      : { query: 'filler', results: searchResults, status: '3 Search Results found in browsed Address Space metadata.' },
     savedConnections,
     endpoints: [
       { URL: 'opc.tcp://192.168.10.42:4840', SecurityPolicy: 'Basic256Sha256', SecurityMode: 'SignAndEncrypt', SecurityLevel: 3, UserTokenTypes: ['Anonymous', 'UserName'], ServerThumbprint: '8A:91:4F:2C:67:12:EB:44' },

@@ -6,6 +6,10 @@ export function BrowseChildren(arg1) {
   return window['go']['main']['App']['BrowseChildren'](arg1);
 }
 
+export function CallMethod(arg1) {
+  return window['go']['main']['App']['CallMethod'](arg1);
+}
+
 export function ClearVariableNodeInspection() {
   return window['go']['main']['App']['ClearVariableNodeInspection']();
 }
@@ -28,6 +32,10 @@ export function DiscoverEndpoints(arg1) {
 
 export function GetDiagnosticLogs() {
   return window['go']['main']['App']['GetDiagnosticLogs']();
+}
+
+export function GetMethodDetails(arg1) {
+  return window['go']['main']['App']['GetMethodDetails'](arg1);
 }
 
 export function GetSavedConnections() {

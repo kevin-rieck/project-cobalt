@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionSafety, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, RefreshVariableNodeValue, SaveSavedConnection, SearchAddressSpace, SetReadOnlyMode, UnwatchVariableNode, WatchVariableNode, WriteVariableNodeValue } from '../wailsjs/go/main/App.js'
+  import { BrowseChildren, CallMethod, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetMethodDetails, GetSavedConnections, GetSessionSafety, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, RefreshVariableNodeValue, SaveSavedConnection, SearchAddressSpace, SetReadOnlyMode, UnwatchVariableNode, WatchVariableNode, WriteVariableNodeValue } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
   import { getReadmeScreenshotState } from './readmeScreenshots'
 
@@ -17,10 +17,48 @@
   }
 
   type AddressNode = {
+    ParentNodeID: string
     NodeID: string
     DisplayName: string
     BrowseName: string
     NodeClass: string
+  }
+
+  type MethodArgument = {
+    Name: string
+    DataType: string
+    DataTypeID: string
+    ValueRank: string
+    Description: string
+    ArrayDimensions: number[]
+    Supported: boolean
+  }
+
+  type MethodDetails = {
+    ObjectNodeID: string
+    MethodNodeID: string
+    Description: string
+    Executable: boolean
+    UserExecutable: boolean
+    InputArguments: MethodArgument[]
+    OutputArguments: MethodArgument[]
+  }
+
+  type MethodCallResult = {
+    StatusCode: string
+    InputArgumentResults: string[]
+    OutputArguments: Array<{ DataType: string; Value: string }>
+  }
+
+  type MethodCallAvailability = {
+    selectedMethod: AddressNode | null
+    details: MethodDetails | null
+    detailsLoading: boolean
+    detailsError: string
+    inputs: string[]
+    submitting: boolean
+    connected: boolean
+    readOnlyMode: boolean
   }
 
   type AddressSpaceSearchResult = {
@@ -148,7 +186,7 @@
 
   const objectsRoot: TreeNode = {
     key: 'root:i=85',
-    node: { NodeID: 'i=85', DisplayName: 'Objects', BrowseName: 'Objects', NodeClass: 'Object' },
+    node: { ParentNodeID: '', NodeID: 'i=85', DisplayName: 'Objects', BrowseName: 'Objects', NodeClass: 'Object' },
     depth: 0,
     expanded: false,
     childrenLoaded: false,
@@ -197,6 +235,14 @@
   let writeError = ''
   let writeConfirmOpen = false
   let writeConfirmationSnapshot: WriteConfirmationSnapshot | null = null
+  let selectedMethod: AddressNode | null = null
+  let methodDetails: MethodDetails | null = null
+  let methodDetailsLoading = false
+  let methodDetailsError = ''
+  let methodInputs: string[] = []
+  let methodSubmitting = false
+  let methodResult: MethodCallResult | null = null
+  let methodCallError = ''
 
   $: selectedEndpointInfo = endpoints[selectedEndpoint]
   $: selectedSecurityMode = selectedEndpointInfo?.SecurityMode?.replace('MessageSecurityMode', '').trim() || ''
@@ -213,6 +259,8 @@
   $: writeConfirmationInvalidated = isWriteConfirmationInvalidated(inspection, writeConfirmationSnapshot)
   $: writeRangeWarning = writeTargetRangeWarning(inspection, writeTargetValue)
   $: writeStatusWarning = inspection && !inspection.stale && inspection.value?.Status && !inspection.value.Status.includes('Good') ? `Current status is ${inspection.value.Status}; confirm the value is safe to change.` : ''
+  $: methodDisabledReasons = methodCallDisabledReasons({ selectedMethod, details: methodDetails, detailsLoading: methodDetailsLoading, detailsError: methodDetailsError, inputs: methodInputs, submitting: methodSubmitting, connected, readOnlyMode })
+  $: canCallMethod = !!selectedMethod && !!methodDetails && methodDisabledReasons.length === 0
 
   onMount(() => {
     let disposed = false
@@ -265,6 +313,7 @@
   function applySessionSafety(sessionSafety: SessionSafety) {
     connected = sessionSafety.connected
     readOnlyMode = sessionSafety.readOnlyMode
+    if (!sessionSafety.connected) resetMethodState()
   }
 
   function addToast(level: string, message: string) {
@@ -347,6 +396,7 @@
       tree = [{ ...objectsRoot }]
       selectedNodeID = ''
       inspection = null
+      resetMethodState()
       watchlist = []
       sessionTrend = { nodes: [], points: [] }
       focusedTrendNodeID = ''
@@ -448,6 +498,7 @@
       tree = [{ ...objectsRoot }]
       selectedNodeID = ''
       inspection = null
+      resetMethodState()
       watchlist = []
       sessionTrend = { nodes: [], points: [] }
       focusedTrendNodeID = ''
@@ -460,12 +511,12 @@
   }
 
   async function setReadOnlyMode(enabled: boolean) {
-    if (!enabled && !window.confirm('Allow Variable Node Writes?\n\nThis enables Variable Node Writes until you disconnect or turn Read-Only Mode back on. Each write still requires confirmation.')) return
+    if (!enabled && !window.confirm('Allow changes to the OPC UA Server?\n\nThis enables Variable Node Writes and Method calls until you disconnect or turn Read-Only Mode back on. Variable Node Writes still require confirmation.')) return
     try {
       await SetReadOnlyMode(enabled)
       const sessionSafety = await GetSessionSafety()
       applySessionSafety(sessionSafety)
-      addToast('info', enabled ? 'Read-Only Mode enabled' : 'Writes allowed for this session')
+      addToast('info', enabled ? 'Read-Only Mode enabled' : 'Changes allowed for this session')
     } catch (error) {
       addToast('error', String(error))
     }
@@ -503,10 +554,14 @@
   }
 
   async function selectNode(item: TreeNode) {
-    selectedNodeID = item.node.NodeID
+    selectedNodeID = nodeSelectionKey(item.node)
     if (item.node.NodeClass === 'Variable') {
+      resetMethodState()
       await InspectVariableNode(item.node)
+    } else if (item.node.NodeClass === 'Method') {
+      await activateMethod(item.node)
     } else {
+      resetMethodState()
       await ClearVariableNodeInspection()
     }
   }
@@ -539,10 +594,14 @@
   }
 
   async function activateSearchResult(result: AddressSpaceSearchResult) {
-    selectedNodeID = result.node.NodeID
+    selectedNodeID = nodeSelectionKey(result.node)
     if (result.node.NodeClass === 'Variable') {
+      resetMethodState()
       await InspectVariableNode(result.node)
+    } else if (result.node.NodeClass === 'Method') {
+      await activateMethod(result.node)
     } else {
+      resetMethodState()
       await ClearVariableNodeInspection()
     }
   }
@@ -559,7 +618,7 @@
 
   async function activateNode(item: TreeNode) {
     await selectNode(item)
-    if (item.node.NodeClass !== 'Variable') {
+    if (item.node.NodeClass !== 'Variable' && item.node.NodeClass !== 'Method') {
       await toggleNode(item)
     }
   }
@@ -594,6 +653,100 @@
     writeError = ''
     writeConfirmOpen = false
     writeConfirmationSnapshot = null
+  }
+
+  function nodeSelectionKey(node: AddressNode) {
+    return node.NodeClass === 'Method' ? `${node.ParentNodeID || ''}\u0000${node.NodeID}` : node.NodeID
+  }
+
+  function resetMethodState() {
+    selectedMethod = null
+    methodDetails = null
+    methodDetailsLoading = false
+    methodDetailsError = ''
+    methodInputs = []
+    methodSubmitting = false
+    methodResult = null
+    methodCallError = ''
+  }
+
+  async function activateMethod(node: AddressNode) {
+    resetMethodState()
+    resetWriteState()
+    inspection = null
+    selectedMethod = node
+    methodDetailsLoading = true
+    const selectionKey = nodeSelectionKey(node)
+    await ClearVariableNodeInspection()
+    try {
+      const details = await GetMethodDetails({ objectNodeID: node.ParentNodeID || '', methodNodeID: node.NodeID })
+      if (selectedMethod && nodeSelectionKey(selectedMethod) === selectionKey) {
+        methodDetails = { ...details, InputArguments: details.InputArguments || [], OutputArguments: details.OutputArguments || [] }
+        methodInputs = methodDetails.InputArguments.map(() => '')
+      }
+    } catch (error) {
+      if (selectedMethod && nodeSelectionKey(selectedMethod) === selectionKey) methodDetailsError = String(error)
+    } finally {
+      if (selectedMethod && nodeSelectionKey(selectedMethod) === selectionKey) methodDetailsLoading = false
+    }
+  }
+
+  function updateMethodInput(index: number, value: string) {
+    methodInputs = methodInputs.map((current, currentIndex) => currentIndex === index ? value : current)
+    methodResult = null
+    methodCallError = ''
+  }
+
+  function methodCallDisabledReasons(state: MethodCallAvailability) {
+    const reasons: string[] = []
+    if (!state.connected) reasons.push('Connect to an OPC UA Server before calling a Method.')
+    if (state.readOnlyMode) reasons.push('Read-Only Mode is active.')
+    if (state.detailsLoading) reasons.push('Method metadata is loading.')
+    if (state.detailsError) reasons.push(`Method metadata failed to load: ${state.detailsError}`)
+    if (!state.selectedMethod) return reasons
+    if (!state.details && !state.detailsLoading && !state.detailsError) reasons.push('Method metadata is unavailable.')
+    if (!state.details) return reasons
+    if (!state.details.Executable) reasons.push('Method is not executable.')
+    else if (!state.details.UserExecutable) reasons.push('Method is not executable for the current session.')
+    state.details.InputArguments.forEach((argument, index) => {
+      const unsupportedType = !isSupportedWriteDataType(argument.DataType)
+      const unsupportedRank = argument.ValueRank !== 'Scalar'
+      if (!argument.Supported || unsupportedType || unsupportedRank) {
+        const limitations = [unsupportedType ? `DataType ${argument.DataType}` : '', unsupportedRank ? `ValueRank ${argument.ValueRank}` : ''].filter(Boolean).join(' and ')
+        reasons.push(`${argument.Name || `Input ${index + 1}`} uses unsupported ${limitations || 'argument metadata'}.`)
+        return
+      }
+      const error = parseScalarInputError(argument.DataType, state.inputs[index] || '', argument.Name || `Input ${index + 1}`)
+      if (error) reasons.push(error)
+    })
+    if (state.submitting) reasons.push('Method call is in progress.')
+    return reasons
+  }
+
+  async function submitMethodCall() {
+    if (!selectedMethod || !methodDetails || !canCallMethod || methodSubmitting) return
+    const selectionKey = nodeSelectionKey(selectedMethod)
+    methodSubmitting = true
+    methodResult = null
+    methodCallError = ''
+    try {
+      const result = await CallMethod({ objectNodeID: methodDetails.ObjectNodeID, methodNodeID: methodDetails.MethodNodeID, inputArguments: methodInputs })
+      if (!selectedMethod || nodeSelectionKey(selectedMethod) !== selectionKey) return
+      methodResult = { ...result, InputArgumentResults: result.InputArgumentResults || [], OutputArguments: result.OutputArguments || [] }
+      if (result.StatusCode.includes('Good')) addToast('info', `Method call completed: ${result.StatusCode}`)
+      else addToast('error', `Method call returned ${result.StatusCode}`)
+    } catch (error) {
+      if (!selectedMethod || nodeSelectionKey(selectedMethod) !== selectionKey) return
+      methodCallError = `Method call failed: ${String(error)}`
+      addToast('error', methodCallError)
+    } finally {
+      if (selectedMethod && nodeSelectionKey(selectedMethod) === selectionKey) methodSubmitting = false
+    }
+  }
+
+  function methodObjectName() {
+    if (!selectedMethod?.ParentNodeID) return '—'
+    return tree.find(item => item.node.NodeID === selectedMethod?.ParentNodeID)?.node.DisplayName || selectedMethod.ParentNodeID
   }
 
   function openWriteConfirmation() {
@@ -676,25 +829,30 @@
   }
 
   function parseWriteTargetError(dataType: string, target: string) {
+    return parseScalarInputError(dataType, target, 'Target Value')
+  }
+
+  function parseScalarInputError(dataType: string, target: string, label: string) {
     const trimmed = target.trim()
     if (!dataType || !isSupportedWriteDataType(dataType)) return ''
     if (dataType === 'String') return ''
-    if (!trimmed) return 'Enter a Target Value.'
-    if (dataType === 'Boolean') return ['true', 'false', '1', '0', 'on', 'off', 'yes', 'no'].includes(trimmed.toLowerCase()) ? '' : 'Target Value must parse as Boolean.'
+    if (!trimmed) return label === 'Target Value' ? 'Enter a Target Value.' : `Enter a value for ${label}.`
+    if (dataType === 'Boolean') return ['true', 'false', '1', '0', 'on', 'off', 'yes', 'no'].includes(trimmed.toLowerCase()) ? '' : `${label} must parse as Boolean.`
     if (['Float', 'Double'].includes(dataType)) {
       const decimalFloatPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
       const parsed = Number(trimmed)
-      return decimalFloatPattern.test(trimmed) && Number.isFinite(parsed) ? '' : `Target Value must parse as ${dataType}.`
+      const inRange = Number.isFinite(parsed) && (dataType !== 'Float' || Number.isFinite(Math.fround(parsed)))
+      return decimalFloatPattern.test(trimmed) && inRange ? '' : `${label} must parse as ${dataType}.`
     }
-    if (!/^[+]?\d+$/.test(trimmed) && ['Byte', 'UInt16', 'UInt32', 'UInt64'].includes(dataType)) return `Target Value must be an unsigned plain decimal integer for ${dataType}.`
-    if (!/^[+-]?\d+$/.test(trimmed)) return `Target Value must be a plain decimal integer for ${dataType}.`
+    if (!/^[+]?\d+$/.test(trimmed) && ['Byte', 'UInt16', 'UInt32', 'UInt64'].includes(dataType)) return `${label} must be an unsigned plain decimal integer for ${dataType}.`
+    if (!/^[+-]?\d+$/.test(trimmed)) return `${label} must be a plain decimal integer for ${dataType}.`
     const value = BigInt(trimmed)
     const ranges: Record<string, [bigint, bigint]> = {
       SByte: [BigInt('-128'), BigInt('127')], Int16: [BigInt('-32768'), BigInt('32767')], Int32: [BigInt('-2147483648'), BigInt('2147483647')], Int64: [BigInt('-9223372036854775808'), BigInt('9223372036854775807')],
       Byte: [BigInt('0'), BigInt('255')], UInt16: [BigInt('0'), BigInt('65535')], UInt32: [BigInt('0'), BigInt('4294967295')], UInt64: [BigInt('0'), BigInt('18446744073709551615')]
     }
     const [min, max] = ranges[dataType]
-    return value < min || value > max ? `Target Value is outside ${dataType} range.` : ''
+    return value < min || value > max ? `${label} is outside ${dataType} range.` : ''
   }
 
   function writeTargetRangeWarning(current: Inspection | null, target: string) {
@@ -780,6 +938,7 @@
   function nodeIcon(nodeClass: string) {
     if (nodeClass === 'Variable') return 'monitoring'
     if (nodeClass === 'Object') return 'account_tree'
+    if (nodeClass === 'Method') return 'play_circle'
     return 'schema'
   }
 
@@ -879,9 +1038,9 @@
       </div>
       <div class="flex items-center gap-sm">
         {#if connected}
-          <span class="rounded border border-outline-variant px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Writes Allowed'}</span>
+          <span class="rounded border border-outline-variant px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Changes Allowed'}</span>
           {#if readOnlyMode}
-            <button class="btn-secondary" on:click={() => setReadOnlyMode(false)}>Allow writes this session</button>
+            <button class="btn-secondary" on:click={() => setReadOnlyMode(false)}>Allow changes this session</button>
           {:else}
             <button class="btn-secondary" on:click={() => setReadOnlyMode(true)}>Read-Only Mode</button>
           {/if}
@@ -1028,7 +1187,7 @@
           {/if}
         </section>
       {:else if activeTab === 'address-space'}
-        <section class="grid h-full min-h-[600px] gap-lg xl:grid-cols-[minmax(320px,0.85fr)_minmax(380px,1.05fr)_minmax(420px,1.1fr)]">
+        <section class="grid h-full min-h-[600px] gap-lg xl:grid-cols-[minmax(240px,0.8fr)_minmax(280px,0.95fr)_minmax(360px,1.25fr)]">
           <div class="panel flex min-h-0 flex-col overflow-hidden">
             <div class="flex items-center justify-between border-b border-outline-variant p-md">
               <div><p class="label">Address Space</p><h2 class="text-xl font-semibold">Objects</h2></div>
@@ -1040,11 +1199,15 @@
               {:else}
                 {#each visibleTree as item (item.key)}
                   <div class="group flex items-center gap-xs rounded px-sm py-xs hover:bg-surface-container-high" style={`padding-left: ${8 + item.depth * 18}px`}>
-                    <button class="flex h-6 w-6 items-center justify-center rounded hover:bg-surface-container-highest" on:click={() => toggleNode(item)} title="Expand or collapse">
-                      {#if item.loading}<span class="text-xs text-primary">…</span>{:else}<span class="material-symbols-outlined text-[18px]">{item.expanded ? 'expand_more' : 'chevron_right'}</span>{/if}
-                    </button>
-                    <button class="min-w-0 flex-1 truncate rounded px-xs py-xs text-left {selectedNodeID === item.node.NodeID ? 'bg-secondary-container text-on-secondary-container' : 'text-on-surface'}" on:click={() => activateNode(item)}>
-                      <span class="mr-sm font-medium">{item.node.DisplayName}</span><span class="font-mono text-xs text-on-surface-variant">{item.node.NodeClass}</span>
+                    {#if item.node.NodeClass === 'Method'}
+                      <span class="material-symbols-outlined flex h-6 w-6 items-center justify-center text-[18px] text-primary" title="Method Node">play_circle</span>
+                    {:else}
+                      <button class="flex h-6 w-6 items-center justify-center rounded hover:bg-surface-container-highest" on:click={() => toggleNode(item)} title="Expand or collapse">
+                        {#if item.loading}<span class="text-xs text-primary">…</span>{:else}<span class="material-symbols-outlined text-[18px]">{item.expanded ? 'expand_more' : 'chevron_right'}</span>{/if}
+                      </button>
+                    {/if}
+                    <button aria-label={`${item.node.DisplayName} ${item.node.NodeClass}`} class="min-w-0 flex-1 truncate rounded px-xs py-xs text-left {selectedNodeID === nodeSelectionKey(item.node) ? 'bg-secondary-container text-on-secondary-container' : 'text-on-surface'}" on:click={() => activateNode(item)}>
+                      <span class="mr-sm font-medium">{item.node.DisplayName}</span><span class="font-mono text-xs {item.node.NodeClass === 'Method' ? 'text-primary' : 'text-on-surface-variant'}">{item.node.NodeClass}</span>
                     </button>
                   </div>
                   {#if item.error}<div class="ml-lg text-xs text-error">{item.error}</div>{/if}
@@ -1077,9 +1240,9 @@
                 </div>
               {:else}
                 <div class="space-y-md">
-                  {#each searchView.results as result (result.node.NodeID)}
-                    <div role="button" tabindex="0" class="group relative block w-full cursor-pointer overflow-hidden rounded-lg border border-outline-variant bg-surface-container p-md text-left transition-colors hover:border-primary/70 {selectedNodeID === result.node.NodeID ? 'border-primary bg-secondary-container/40' : ''}" on:click={() => activateSearchResult(result)} on:keydown={(event) => event.key === 'Enter' && activateSearchResult(result)}>
-                      <div class="absolute left-0 top-0 bottom-0 w-[2px] bg-primary {selectedNodeID === result.node.NodeID ? 'scale-y-100' : 'scale-y-0 group-hover:scale-y-100'} origin-top transition-transform"></div>
+                  {#each searchView.results as result (nodeSelectionKey(result.node))}
+                    <div role="button" tabindex="0" class="group relative block w-full cursor-pointer overflow-hidden rounded-lg border border-outline-variant bg-surface-container p-md text-left transition-colors hover:border-primary/70 {selectedNodeID === nodeSelectionKey(result.node) ? 'border-primary bg-secondary-container/40' : ''}" on:click={() => activateSearchResult(result)} on:keydown={(event) => event.key === 'Enter' && activateSearchResult(result)}>
+                      <div class="absolute left-0 top-0 bottom-0 w-[2px] bg-primary {selectedNodeID === nodeSelectionKey(result.node) ? 'scale-y-100' : 'scale-y-0 group-hover:scale-y-100'} origin-top transition-transform"></div>
                       <div class="flex items-start justify-between gap-md">
                         <div class="flex min-w-0 gap-sm">
                           <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-outline-variant bg-surface-container-high text-primary">
@@ -1111,7 +1274,7 @@
 
           <div class="panel flex min-h-0 flex-col overflow-hidden">
             <div class="flex items-center justify-between gap-md border-b border-outline-variant p-md">
-              <div class="min-w-0"><p class="label">Variable Node Inspection</p><h2 class="truncate text-xl font-semibold">{inspection?.node?.DisplayName ?? 'No Variable Node selected'}</h2></div>
+              <div class="min-w-0"><p class="label">{selectedMethod ? 'Method Call' : 'Variable Node Inspection'}</p><h2 class="truncate text-xl font-semibold">{selectedMethod?.DisplayName ?? inspection?.node?.DisplayName ?? 'No node selected'}</h2></div>
               {#if inspection}
                 <div class="flex shrink-0 items-center gap-sm">
                   <button class="btn-secondary" on:click={refreshInspectionValue} disabled={refreshingNodeID === inspection.node.NodeID}>{refreshingNodeID === inspection.node.NodeID ? 'Refreshing…' : 'Refresh current value'}</button>
@@ -1124,7 +1287,93 @@
               {/if}
             </div>
             <div class="min-h-0 flex-1 overflow-auto p-lg">
-              {#if inspection}
+              {#if selectedMethod}
+                {#if methodDetailsLoading}
+                  <div class="rounded border border-outline-variant bg-surface-container-low p-md text-on-surface-variant">Loading Method metadata…</div>
+                {/if}
+                {#if methodDetails}
+                  <div class="space-y-lg">
+                    <div>
+                      <div class="flex flex-wrap items-center gap-sm">
+                        <span class="material-symbols-outlined text-primary">play_circle</span>
+                        <span class="rounded bg-primary/10 px-sm py-xs text-sm font-semibold text-primary">Method Node</span>
+                        <span class="rounded bg-surface-container-highest px-sm py-xs text-sm {methodDetails.Executable && methodDetails.UserExecutable ? 'text-emerald-400' : 'text-tertiary'}">{methodDetails.Executable && methodDetails.UserExecutable ? 'Executable for this session' : methodDetails.Executable ? 'Not executable for this session' : 'Not executable'}</span>
+                      </div>
+                      <p class="mt-md text-on-surface-variant">{methodDetails.Description || 'No description provided.'}</p>
+                    </div>
+
+                    <dl class="grid gap-sm text-sm sm:grid-cols-2">
+                      <div class="rounded border border-outline-variant bg-surface-container-low p-sm"><dt class="label">Object Node</dt><dd class="mt-xs font-semibold">{methodObjectName()}</dd></div>
+                      <div class="rounded border border-outline-variant bg-surface-container-low p-sm"><dt class="label">Method Node</dt><dd class="mt-xs font-semibold">{selectedMethod.DisplayName}</dd></div>
+                      <div class="rounded border border-outline-variant bg-surface-container-low p-sm sm:col-span-2"><dt class="label">Object NodeID</dt><dd class="mt-xs break-all font-mono">{methodDetails.ObjectNodeID}</dd></div>
+                      <div class="rounded border border-outline-variant bg-surface-container-low p-sm sm:col-span-2"><dt class="label">Method NodeID</dt><dd class="mt-xs break-all font-mono">{methodDetails.MethodNodeID}</dd></div>
+                    </dl>
+
+                    <section aria-labelledby="method-input-heading">
+                      <div class="flex items-center justify-between"><h3 id="method-input-heading" class="text-lg font-semibold">Input arguments</h3><span class="font-mono text-xs text-on-surface-variant">{methodDetails.InputArguments.length} ordered</span></div>
+                      {#if methodDetails.InputArguments.length === 0}
+                        <p class="mt-sm text-sm text-on-surface-variant">This Method has no input arguments.</p>
+                      {:else}
+                        <div class="mt-sm space-y-sm">
+                          {#each methodDetails.InputArguments as argument, index}
+                            <label class="block rounded border border-outline-variant bg-surface-container-low p-md">
+                              <span class="flex flex-wrap items-center justify-between gap-sm"><span class="font-semibold">{argument.Name || `Input ${index + 1}`}</span><span class="font-mono text-xs text-primary">{argument.DataType} · {argument.ValueRank}</span></span>
+                              <input class="field mt-sm w-full" aria-label={argument.Name || `Input ${index + 1}`} value={methodInputs[index] || ''} disabled={!argument.Supported || argument.ValueRank !== 'Scalar' || !isSupportedWriteDataType(argument.DataType)} on:input={(event) => updateMethodInput(index, event.currentTarget.value)} on:keydown={(event) => event.key === 'Enter' && event.preventDefault()} placeholder={`Enter ${argument.DataType}`} />
+                              <span class="mt-sm block text-xs text-on-surface-variant">DataType NodeID: {argument.DataTypeID || '—'} · Dimensions: {argument.ArrayDimensions?.length ? argument.ArrayDimensions.join(' × ') : 'none'}</span>
+                              {#if argument.Description}<span class="mt-xs block text-sm text-on-surface-variant">{argument.Description}</span>{/if}
+                            </label>
+                          {/each}
+                        </div>
+                      {/if}
+                    </section>
+
+                    <section aria-labelledby="method-output-heading">
+                      <div class="flex items-center justify-between"><h3 id="method-output-heading" class="text-lg font-semibold">Output arguments</h3><span class="font-mono text-xs text-on-surface-variant">{methodDetails.OutputArguments.length} ordered</span></div>
+                      {#if methodDetails.OutputArguments.length === 0}
+                        <p class="mt-sm text-sm text-on-surface-variant">This Method has no declared output arguments.</p>
+                      {:else}
+                        <ol class="mt-sm space-y-sm">
+                          {#each methodDetails.OutputArguments as argument, index}
+                            <li class="rounded border border-outline-variant bg-surface-container-low p-sm text-sm"><span class="font-semibold">{index + 1}. <span>{argument.Name || `Output ${index + 1}`}</span></span><span class="ml-sm font-mono text-xs text-primary">{argument.DataType} · {argument.ValueRank}</span><p class="mt-xs text-xs text-on-surface-variant">DataType NodeID: {argument.DataTypeID || '—'} · Dimensions: {argument.ArrayDimensions?.length ? argument.ArrayDimensions.join(' × ') : 'none'}</p>{#if argument.Description}<p class="mt-xs text-on-surface-variant">{argument.Description}</p>{/if}</li>
+                          {/each}
+                        </ol>
+                      {/if}
+                    </section>
+
+                    {#if methodDisabledReasons.length > 0}
+                      <ul class="list-disc space-y-xs pl-lg text-sm text-on-surface-variant">
+                        {#each methodDisabledReasons as reason}<li>{reason}</li>{/each}
+                      </ul>
+                    {/if}
+                    <section class="rounded border border-tertiary-container/60 bg-tertiary-container/10 p-md" aria-label="Method call review">
+                      <p class="label">Review Method call</p>
+                      <dl class="mt-sm space-y-xs text-sm">
+                        <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Saved Connection / Endpoint</dt><dd class="text-right font-mono">{currentConnection || endpointText || 'Current session'}</dd></div>
+                        <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Object Node</dt><dd class="text-right">{methodObjectName()}</dd></div>
+                        <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Method Node</dt><dd class="text-right">{selectedMethod.DisplayName}</dd></div>
+                        <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Object NodeID</dt><dd class="break-all text-right font-mono">{methodDetails.ObjectNodeID}</dd></div>
+                        <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Method NodeID</dt><dd class="break-all text-right font-mono">{methodDetails.MethodNodeID}</dd></div>
+                        {#each methodDetails.InputArguments as argument, index}<div class="flex justify-between gap-md"><dt class="text-on-surface-variant">{argument.Name || `Input ${index + 1}`}</dt><dd class="break-all text-right font-mono">{methodInputs[index] || '—'}</dd></div>{/each}
+                      </dl>
+                    </section>
+                    <button class="btn-primary w-full" disabled={!canCallMethod} on:click={submitMethodCall}>{methodSubmitting ? 'Calling…' : 'Call Method'}</button>
+
+                    {#if methodCallError}<div class="rounded border border-error-container bg-error-container/20 p-md text-error">{methodCallError}</div>{/if}
+                    {#if methodResult}
+                      <section class="rounded border {methodResult.StatusCode.includes('Good') ? 'border-primary/50 bg-primary/10' : 'border-error-container bg-error-container/20'} p-md" aria-label="Method call result">
+                        <p class="label">StatusCode</p><p class="mt-xs break-all font-mono text-lg">{methodResult.StatusCode}</p>
+                        {#if methodResult.InputArgumentResults.length}<p class="mt-md label">Input argument results</p><ol class="mt-xs list-decimal pl-lg font-mono text-sm">{#each methodResult.InputArgumentResults as status}<li>{status}</li>{/each}</ol>{/if}
+                        <p class="mt-md label">Raw outputs</p>
+                        {#if methodResult.OutputArguments.length}<ol class="mt-xs space-y-xs">{#each methodResult.OutputArguments as output, index}<li class="font-mono text-sm">{index + 1}. <span class="text-primary">{output.DataType}</span> <span>{output.Value}</span></li>{/each}</ol>{:else}<p class="mt-xs text-sm text-on-surface-variant">No output values returned.</p>{/if}
+                      </section>
+                    {/if}
+                  </div>
+                {/if}
+                {#if !methodDetails}
+                  <button class="btn-primary mt-md w-full" disabled>Call Method</button>
+                  {#if methodDisabledReasons.length > 0}<ul class="mt-md list-disc space-y-xs pl-lg text-sm text-on-surface-variant">{#each methodDisabledReasons as reason}<li>{reason}</li>{/each}</ul>{/if}
+                {/if}
+              {:else if inspection}
                 <div class="grid gap-md lg:grid-cols-3">
                   <div class="panel bg-surface-container-low p-md"><p class="label">Live Value</p><p class="mt-sm font-mono text-2xl text-primary">{inspection.value?.Value || '—'}</p></div>
                   <div class="panel bg-surface-container-low p-md"><p class="label">Status</p><p class="mt-sm font-mono text-sm {inspection.stale ? 'text-tertiary' : 'text-emerald-400'}">{inspection.stale ? 'Stale' : inspection.value?.Status || 'Waiting'}</p></div>
@@ -1141,7 +1390,7 @@
                       <h3 class="mt-xs text-lg font-semibold">Write value</h3>
                       <p class="mt-xs text-sm text-on-surface-variant">Available only from Variable Node Inspection. Every write requires confirmation and cannot be submitted with Enter.</p>
                     </div>
-                    <span class="rounded px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Writes Allowed'}</span>
+                    <span class="rounded px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Changes Allowed'}</span>
                   </div>
                   <div class="mt-md grid gap-sm lg:grid-cols-[1fr_auto]">
                     <label class="space-y-xs">
@@ -1190,7 +1439,7 @@
                   </div>
                 </div>
               {:else}
-                <div class="flex h-full items-center justify-center text-on-surface-variant">Select a Variable Node from the Address Space to inspect its Live Value and metadata.</div>
+                <div class="flex h-full items-center justify-center text-center text-on-surface-variant">Select a Variable Node or Method Node from the Address Space to inspect it.</div>
               {/if}
             </div>
           </div>

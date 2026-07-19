@@ -26,6 +26,7 @@ type Client interface {
 	Connect(ctx context.Context, request ConnectRequest) error
 	BrowseChildren(ctx context.Context, nodeID string) ([]AddressNode, error)
 	ReadNodeDetails(ctx context.Context, nodeID string) (NodeDetails, error)
+	ReadMethodDetails(ctx context.Context, objectNodeID, methodNodeID string) (MethodDetails, error)
 	ReadValue(ctx context.Context, nodeID string) (LiveValue, error)
 	WriteValue(ctx context.Context, nodeID string, value ScalarValue) error
 	SubscribeValue(ctx context.Context, nodeID string) (<-chan LiveValue, ValueSubscription, error)
@@ -61,10 +62,11 @@ type ConnectRequest struct {
 
 // AddressNode is the app-level projection of a browsed Address Space node.
 type AddressNode struct {
-	NodeID      string
-	DisplayName string
-	BrowseName  string
-	NodeClass   string
+	ParentNodeID string
+	NodeID       string
+	DisplayName  string
+	BrowseName   string
+	NodeClass    string
 }
 
 // LiveValue is the app-level projection of a subscribed Variable Node value.
@@ -218,10 +220,7 @@ func (c *gopcuaClient) BrowseChildren(ctx context.Context, nodeID string) ([]Add
 		return nil, err
 	}
 
-	nodes := make([]AddressNode, 0, len(refs))
-	for _, ref := range refs {
-		nodes = append(nodes, addressNodeFromReference(ref))
-	}
+	nodes := addressNodesFromReferences(nodeID, refs)
 	sort.SliceStable(nodes, func(i, j int) bool {
 		return strings.ToLower(nodes[i].DisplayName) < strings.ToLower(nodes[j].DisplayName)
 	})
@@ -419,6 +418,16 @@ func liveValueFromDataValue(nodeID string, data *ua.DataValue) LiveValue {
 }
 
 var opcuaSubscriptionInterval = 1 * time.Second
+
+func addressNodesFromReferences(parentNodeID string, refs []*ua.ReferenceDescription) []AddressNode {
+	nodes := make([]AddressNode, 0, len(refs))
+	for _, ref := range refs {
+		child := addressNodeFromReference(ref)
+		child.ParentNodeID = parentNodeID
+		nodes = append(nodes, child)
+	}
+	return nodes
+}
 
 func addressNodeFromReference(ref *ua.ReferenceDescription) AddressNode {
 	nodeID := ""

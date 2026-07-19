@@ -21,22 +21,25 @@ func configureSearchSession(app *App, options search.SessionOptions) {
 }
 
 type recordingClient struct {
-	mu               sync.Mutex
-	connectErr       error
-	closeErr         error
-	connectRequests  []opcua.ConnectRequest
-	browseChildren   map[string][]opcua.AddressNode
-	browseErrors     map[string]error
-	browseRequests   []string
-	browseTimes      []time.Time
-	browseContexts   []context.Context
-	readValues       map[string]opcua.LiveValue
-	readValueErrors  map[string]error
-	readValueIDs     []string
-	readDetails      map[string]opcua.NodeDetails
-	readDetailErrors map[string]error
-	writeErrors      map[string]error
-	writeRequests    []recordedWrite
+	mu                   sync.Mutex
+	connectErr           error
+	closeErr             error
+	connectRequests      []opcua.ConnectRequest
+	browseChildren       map[string][]opcua.AddressNode
+	browseErrors         map[string]error
+	browseRequests       []string
+	browseTimes          []time.Time
+	browseContexts       []context.Context
+	readValues           map[string]opcua.LiveValue
+	readValueErrors      map[string]error
+	readValueIDs         []string
+	readDetails          map[string]opcua.NodeDetails
+	readDetailErrors     map[string]error
+	methodDetails        map[string]opcua.MethodDetails
+	methodDetailErrors   map[string]error
+	methodDetailRequests []MethodNodeRequest
+	writeErrors          map[string]error
+	writeRequests        []recordedWrite
 }
 
 type recordedWrite struct {
@@ -104,6 +107,17 @@ func (c *recordingClient) ReadNodeDetails(_ context.Context, nodeID string) (opc
 		return opcua.NodeDetails{}, nil
 	}
 	return c.readDetails[nodeID], nil
+}
+
+func (c *recordingClient) ReadMethodDetails(_ context.Context, objectNodeID, methodNodeID string) (opcua.MethodDetails, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	request := MethodNodeRequest{ObjectNodeID: objectNodeID, MethodNodeID: methodNodeID}
+	c.methodDetailRequests = append(c.methodDetailRequests, request)
+	if err := c.methodDetailErrors[objectNodeID+"\x00"+methodNodeID]; err != nil {
+		return opcua.MethodDetails{}, err
+	}
+	return c.methodDetails[objectNodeID+"\x00"+methodNodeID], nil
 }
 
 func (c *recordingClient) ReadValue(_ context.Context, nodeID string) (opcua.LiveValue, error) {
@@ -525,6 +539,39 @@ func TestExplicitBrowseAddsDiscoveredChildrenToSearchImmediately(t *testing.T) {
 	}
 	if len(view.Results) != 1 || view.Results[0].Node.NodeID != "ns=2;s=ManualTemperature" {
 		t.Fatalf("SearchAddressSpace() = %#v, want explicitly browsed child immediately searchable", view)
+	}
+}
+
+func TestGetMethodDetailsRequiresConnectionButIsAllowedInReadOnlyMode(t *testing.T) {
+	request := MethodNodeRequest{ObjectNodeID: "ns=3;s=Demo.CTT.Methods", MethodNodeID: "ns=3;s=Demo.CTT.Methods.MethodIO"}
+	details := opcua.MethodDetails{
+		ObjectNodeID:    request.ObjectNodeID,
+		MethodNodeID:    request.MethodNodeID,
+		Description:     "Adds 2 unsigned integers",
+		Executable:      true,
+		UserExecutable:  true,
+		InputArguments:  []opcua.MethodArgument{{Name: "Summand1", DataType: "UInt32"}, {Name: "Summand2", DataType: "UInt32"}},
+		OutputArguments: []opcua.MethodArgument{{Name: "Sum", DataType: "UInt32"}},
+	}
+	client := &recordingClient{methodDetails: map[string]opcua.MethodDetails{request.ObjectNodeID + "\x00" + request.MethodNodeID: details}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+
+	if _, err := app.GetMethodDetails(request); err == nil || !strings.Contains(err.Error(), "connected session") {
+		t.Fatalf("GetMethodDetails() disconnected error = %v, want connected session error", err)
+	}
+	app.connected = true
+	app.readOnlyMode = true
+
+	got, err := app.GetMethodDetails(request)
+	if err != nil {
+		t.Fatalf("GetMethodDetails() in Read-Only Mode error = %v", err)
+	}
+	if got.MethodNodeID != details.MethodNodeID || len(got.InputArguments) != 2 || got.OutputArguments[0].Name != "Sum" {
+		t.Fatalf("GetMethodDetails() = %#v, want MethodIO metadata", got)
+	}
+	if len(client.methodDetailRequests) != 1 || client.methodDetailRequests[0] != request {
+		t.Fatalf("ReadMethodDetails requests = %#v, want %#v", client.methodDetailRequests, request)
 	}
 }
 

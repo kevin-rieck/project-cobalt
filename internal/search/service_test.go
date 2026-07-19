@@ -34,6 +34,27 @@ func TestDeduplicatesNodeIDs(t *testing.T) {
 	}
 }
 
+func TestSharedMethodNodeIDRemainsDistinctForEachOwningObjectNode(t *testing.T) {
+	service := NewService()
+	service.AddNodes([]opcua.AddressNode{
+		{ParentNodeID: "ns=2;s=MotorA", NodeID: "ns=2;s=Reset", DisplayName: "Reset", BrowseName: "2:Reset", NodeClass: "Method"},
+		{ParentNodeID: "ns=2;s=MotorB", NodeID: "ns=2;s=Reset", DisplayName: "Reset", BrowseName: "2:Reset", NodeClass: "Method"},
+	})
+
+	view := service.Search("Reset")
+
+	if len(view.Results) != 2 {
+		t.Fatalf("shared Method Search Results = %d, want one per owning Object Node", len(view.Results))
+	}
+	owners := map[string]bool{}
+	for _, result := range view.Results {
+		owners[result.Node.ParentNodeID] = true
+	}
+	if !owners["ns=2;s=MotorA"] || !owners["ns=2;s=MotorB"] {
+		t.Fatalf("shared Method owners = %#v, want MotorA and MotorB", owners)
+	}
+}
+
 func TestExactDisplayNameRanksAboveNodeIDSubstring(t *testing.T) {
 	service := NewService()
 	service.AddNodes([]opcua.AddressNode{

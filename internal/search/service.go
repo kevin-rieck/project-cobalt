@@ -64,11 +64,12 @@ func (s *Service) AddNodes(nodes []opcua.AddressNode) {
 		if strings.TrimSpace(node.NodeID) == "" {
 			continue
 		}
-		if _, exists := s.nodes[node.NodeID]; exists {
+		identity := nodeIdentity(node)
+		if _, exists := s.nodes[identity]; exists {
 			continue
 		}
-		s.nodes[node.NodeID] = node
-		s.order = append(s.order, node.NodeID)
+		s.nodes[identity] = node
+		s.order = append(s.order, identity)
 	}
 }
 
@@ -82,8 +83,8 @@ func (s *Service) Search(query string) AddressSpaceSearchView {
 
 	s.mu.RLock()
 	results := make([]AddressSpaceSearchResult, 0, len(s.nodes))
-	for _, nodeID := range s.order {
-		node, ok := s.nodes[nodeID]
+	for _, identity := range s.order {
+		node, ok := s.nodes[identity]
 		if !ok {
 			continue
 		}
@@ -102,13 +103,23 @@ func (s *Service) Search(query string) AddressSpaceSearchView {
 		if left != right {
 			return left < right
 		}
-		return results[i].Node.NodeID < results[j].Node.NodeID
+		if results[i].Node.NodeID != results[j].Node.NodeID {
+			return results[i].Node.NodeID < results[j].Node.NodeID
+		}
+		return results[i].Node.ParentNodeID < results[j].Node.ParentNodeID
 	})
 	view.Results = results
 	if len(results) == 0 {
 		view.Status = "No matches in browsed Address Space metadata yet. Browse more nodes to expand Search."
 	}
 	return view
+}
+
+func nodeIdentity(node opcua.AddressNode) string {
+	if node.NodeClass == "Method" {
+		return node.ParentNodeID + "\x00" + node.NodeID
+	}
+	return node.NodeID
 }
 
 func matchNode(query string, node opcua.AddressNode) (AddressSpaceSearchResult, bool) {

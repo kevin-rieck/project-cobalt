@@ -43,6 +43,8 @@ type recordingClient struct {
 	methodCallResult     opcua.MethodCallResult
 	methodCallErr        error
 	methodCallRequests   []recordedMethodCall
+	methodCallStarted    chan struct{}
+	methodCallRelease    <-chan struct{}
 }
 
 type recordedWrite struct {
@@ -151,10 +153,18 @@ func (c *recordingClient) WriteValue(_ context.Context, nodeID string, value opc
 
 func (c *recordingClient) CallMethod(_ context.Context, objectNodeID, methodNodeID string, inputs []opcua.ScalarValue) (opcua.MethodCallResult, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	copiedInputs := append([]opcua.ScalarValue{}, inputs...)
 	c.methodCallRequests = append(c.methodCallRequests, recordedMethodCall{objectNodeID: objectNodeID, methodNodeID: methodNodeID, inputs: copiedInputs})
-	return c.methodCallResult, c.methodCallErr
+	result, err := c.methodCallResult, c.methodCallErr
+	started, release := c.methodCallStarted, c.methodCallRelease
+	c.mu.Unlock()
+	if started != nil {
+		close(started)
+	}
+	if release != nil {
+		<-release
+	}
+	return result, err
 }
 
 func (c *recordingClient) SubscribeValue(context.Context, string) (<-chan opcua.LiveValue, opcua.ValueSubscription, error) {
@@ -685,6 +695,49 @@ func TestCallMethodSafetyGatesPreventExecution(t *testing.T) {
 	}
 }
 
+func TestCallMethodSerializesReadOnlyTransitionWithExecution(t *testing.T) {
+	const objectNodeID = "ns=2;s=Object"
+	const methodNodeID = "ns=2;s=Method"
+	key := objectNodeID + "\x00" + methodNodeID
+	started := make(chan struct{})
+	release := make(chan struct{})
+	client := &recordingClient{
+		methodDetails:     map[string]opcua.MethodDetails{key: {Executable: true, UserExecutable: true}},
+		methodCallStarted: started,
+		methodCallRelease: release,
+	}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+	app.connected = true
+	app.readOnlyMode = false
+
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := app.CallMethod(MethodCallRequest{ObjectNodeID: objectNodeID, MethodNodeID: methodNodeID})
+		callDone <- err
+	}()
+	<-started
+
+	modeChangeDone := make(chan error, 1)
+	go func() { modeChangeDone <- app.SetReadOnlyMode(true) }()
+	select {
+	case err := <-modeChangeDone:
+		t.Fatalf("SetReadOnlyMode(true) completed during Method execution: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-callDone; err != nil {
+		t.Fatalf("CallMethod() error = %v", err)
+	}
+	if err := <-modeChangeDone; err != nil {
+		t.Fatalf("SetReadOnlyMode(true) error = %v", err)
+	}
+	if safety := app.GetSessionSafety(); !safety.ReadOnlyMode {
+		t.Fatalf("GetSessionSafety() = %#v, want Read-Only Mode after execution", safety)
+	}
+}
+
 func TestCallMethodReturnsNonGoodStatusAndReportsRedactedTransportFailure(t *testing.T) {
 	const objectNodeID = "ns=2;s=Object"
 	const methodNodeID = "ns=2;s=Method"
@@ -704,9 +757,9 @@ func TestCallMethodReturnsNonGoodStatusAndReportsRedactedTransportFailure(t *tes
 		t.Fatalf("CallMethod() = (%#v, %v), want displayable non-Good result", result, err)
 	}
 
-	client.methodCallErr = errors.New("transport unavailable")
+	client.methodCallErr = errors.New("transport unavailable for TOP-SECRET")
 	_, err = app.CallMethod(MethodCallRequest{ObjectNodeID: objectNodeID, MethodNodeID: methodNodeID, InputArguments: []string{"TOP-SECRET"}})
-	if err == nil || !strings.Contains(err.Error(), "transport unavailable") {
+	if err == nil || !strings.Contains(err.Error(), "transport unavailable for TOP-SECRET") {
 		t.Fatalf("CallMethod() transport error = %v", err)
 	}
 	for _, entry := range app.GetDiagnosticLogs() {

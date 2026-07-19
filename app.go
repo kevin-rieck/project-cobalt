@@ -29,6 +29,7 @@ type App struct {
 	ctx context.Context
 
 	mu                           sync.Mutex
+	methodExecutionMu            sync.RWMutex
 	client                       opcua.Client
 	newClient                    func() opcua.Client
 	inspections                  *session.InspectionSet
@@ -148,15 +149,18 @@ func (a *App) GetSessionSafety() SessionSafetyView {
 }
 
 func (a *App) SetReadOnlyMode(enabled bool) error {
+	a.methodExecutionMu.Lock()
 	a.mu.Lock()
 	if !enabled && !a.connected {
 		a.mu.Unlock()
+		a.methodExecutionMu.Unlock()
 		return fmt.Errorf("Read-Only Mode can be disabled only for a connected session")
 	}
 	wasReadOnly := a.readOnlyMode
 	a.readOnlyMode = enabled
 	view := a.sessionSafetyLocked()
 	a.mu.Unlock()
+	a.methodExecutionMu.Unlock()
 	if enabled && !wasReadOnly {
 		a.appendLog("info", "Read-Only Mode enabled")
 	}
@@ -288,6 +292,7 @@ func (a *App) Connect(request ConnectionRequest) error {
 			}
 		}
 	}
+	a.methodExecutionMu.Lock()
 	a.mu.Lock()
 	a.stopAddressSpaceSearchSessionLocked()
 	a.client = clientToConnect
@@ -297,6 +302,7 @@ func (a *App) Connect(request ConnectionRequest) error {
 	a.addressSpaceSearchSession = a.startAddressSpaceSearchSessionLocked()
 	safety := a.sessionSafetyLocked()
 	a.mu.Unlock()
+	a.methodExecutionMu.Unlock()
 
 	if reconnecting {
 		if closeErr := a.closeClient(previousClient); closeErr != nil {
@@ -334,6 +340,7 @@ func (a *App) PickClientPrivateKey() (string, error) {
 func (a *App) Disconnect() error {
 	a.appendLog("info", "Disconnecting")
 
+	a.methodExecutionMu.Lock()
 	a.mu.Lock()
 	a.stopAddressSpaceSearchSessionLocked()
 	clientToClose := a.client
@@ -343,6 +350,7 @@ func (a *App) Disconnect() error {
 	a.readOnlyMode = true
 	safety := a.sessionSafetyLocked()
 	a.mu.Unlock()
+	a.methodExecutionMu.Unlock()
 
 	a.emitSessionSafetyUpdated(safety)
 	a.emitInspection(nil)
@@ -520,23 +528,28 @@ func (a *App) CallMethod(request MethodCallRequest) (opcua.MethodCallResult, err
 		}
 	}
 
-	// Recheck session safety after the metadata round trip and parsing so a
-	// mode change cannot be bypassed by a stale frontend request.
+	// Serialize execution with session safety transitions so Read-Only Mode or
+	// disconnect cannot take effect between this check and the server request.
+	a.methodExecutionMu.RLock()
 	a.mu.Lock()
 	connected = a.connected
 	readOnly = a.readOnlyMode
 	clientChanged := a.client != client
 	a.mu.Unlock()
 	if !connected || clientChanged {
+		a.methodExecutionMu.RUnlock()
 		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method call requires the same connected session used to validate metadata"))
 	}
 	if readOnly {
+		a.methodExecutionMu.RUnlock()
 		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method call is blocked while Read-Only Mode is active"))
 	}
 
 	result, err := client.CallMethod(a.ctx, objectNodeID, methodNodeID, inputs)
+	a.methodExecutionMu.RUnlock()
 	if err != nil {
-		return a.methodCallFailure(objectNodeID, methodNodeID, err)
+		a.appendLog("error", fmt.Sprintf("Method call failed for Object Node %s Method Node %s: transport or session failure", objectNodeID, methodNodeID))
+		return opcua.MethodCallResult{}, err
 	}
 	a.appendLog("info", fmt.Sprintf("Method call completed for Object Node %s Method Node %s StatusCode=%s", objectNodeID, methodNodeID, result.StatusCode))
 	return result, nil

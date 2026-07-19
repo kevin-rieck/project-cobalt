@@ -35,6 +35,7 @@ async function stubMethodAPI(page: Page, options: { details?: unknown; detailsEr
       CallMethod: call,
       ClearVariableNodeInspection: () => Promise.resolve(),
       Disconnect: () => Promise.resolve(),
+      InspectVariableNode: () => Promise.resolve(),
       GetSessionSafety: () => Promise.resolve({ connected: false, readOnlyMode: true })
     } } }
   }, {
@@ -165,6 +166,20 @@ test('a Good result displays ordered raw outputs and input changes clear stale r
   await expect(page.getByText('Method call completed: StatusGood', { exact: true })).toBeVisible()
   await page.getByLabel('Summand1').fill('21')
   await expect(page.getByText('uint32(42)', { exact: true })).toHaveCount(0)
+})
+
+test('selecting another Address Space node clears the Method result and transient inputs', async ({ page }) => {
+  await stubMethodAPI(page)
+  await openMethod(page)
+  await enterMethodInputs(page)
+  await page.getByRole('button', { name: 'Call Method' }).click()
+  await expect(page.getByText('uint32(42)', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Filler Temperature Variable', exact: true }).click()
+
+  await expect(page.getByRole('heading', { name: 'MethodIO', level: 2 })).toHaveCount(0)
+  await expect(page.getByText('uint32(42)', { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('Summand1')).toHaveCount(0)
 })
 
 test('non-Good and transport failures remain visible inline with concise toasts', async ({ page }) => {

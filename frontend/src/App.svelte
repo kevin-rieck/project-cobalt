@@ -554,16 +554,7 @@
   }
 
   async function selectNode(item: TreeNode) {
-    selectedNodeID = nodeSelectionKey(item.node)
-    if (item.node.NodeClass === 'Variable') {
-      resetMethodState()
-      await InspectVariableNode(item.node)
-    } else if (item.node.NodeClass === 'Method') {
-      await activateMethod(item.node)
-    } else {
-      resetMethodState()
-      await ClearVariableNodeInspection()
-    }
+    await activateAddressNode(item.node)
   }
 
   function resetSearchView() {
@@ -594,12 +585,16 @@
   }
 
   async function activateSearchResult(result: AddressSpaceSearchResult) {
-    selectedNodeID = nodeSelectionKey(result.node)
-    if (result.node.NodeClass === 'Variable') {
+    await activateAddressNode(result.node)
+  }
+
+  async function activateAddressNode(node: AddressNode) {
+    selectedNodeID = nodeSelectionKey(node)
+    if (node.NodeClass === 'Variable') {
       resetMethodState()
-      await InspectVariableNode(result.node)
-    } else if (result.node.NodeClass === 'Method') {
-      await activateMethod(result.node)
+      await InspectVariableNode(node)
+    } else if (node.NodeClass === 'Method') {
+      await activateMethod(node)
     } else {
       resetMethodState()
       await ClearVariableNodeInspection()

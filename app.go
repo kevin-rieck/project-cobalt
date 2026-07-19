@@ -122,6 +122,12 @@ type MethodNodeRequest struct {
 	MethodNodeID string `json:"methodNodeID"`
 }
 
+type MethodCallRequest struct {
+	ObjectNodeID   string   `json:"objectNodeID"`
+	MethodNodeID   string   `json:"methodNodeID"`
+	InputArguments []string `json:"inputArguments"`
+}
+
 type VariableNodeWriteRequest struct {
 	NodeID      string `json:"nodeID"`
 	TargetValue string `json:"targetValue"`
@@ -462,6 +468,83 @@ func (a *App) GetMethodDetails(request MethodNodeRequest) (opcua.MethodDetails, 
 		return opcua.MethodDetails{}, err
 	}
 	return details, nil
+}
+
+func (a *App) CallMethod(request MethodCallRequest) (opcua.MethodCallResult, error) {
+	objectNodeID := strings.TrimSpace(request.ObjectNodeID)
+	methodNodeID := strings.TrimSpace(request.MethodNodeID)
+	if objectNodeID == "" || methodNodeID == "" {
+		return opcua.MethodCallResult{}, fmt.Errorf("Method call requires Object and Method Node IDs")
+	}
+
+	a.appendLog("info", fmt.Sprintf("Method call attempted for Object Node %s Method Node %s", objectNodeID, methodNodeID))
+	a.mu.Lock()
+	connected := a.connected
+	readOnly := a.readOnlyMode
+	client := a.client
+	a.mu.Unlock()
+	if !connected {
+		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method call requires a connected session"))
+	}
+	if readOnly {
+		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method call is blocked while Read-Only Mode is active"))
+	}
+
+	details, err := client.ReadMethodDetails(a.ctx, objectNodeID, methodNodeID)
+	if err != nil {
+		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("re-read Method metadata: %w", err))
+	}
+	if !details.Executable {
+		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method is not executable"))
+	}
+	if !details.UserExecutable {
+		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method is not executable for the current session"))
+	}
+	if len(request.InputArguments) != len(details.InputArguments) {
+		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method requires exactly %d input arguments, got %d", len(details.InputArguments), len(request.InputArguments)))
+	}
+
+	inputs := make([]opcua.ScalarValue, len(details.InputArguments))
+	for i, argument := range details.InputArguments {
+		if argument.ValueRank != "Scalar" {
+			return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method input argument %d (%s) has unsupported non-scalar ValueRank %q", i+1, argument.Name, argument.ValueRank))
+		}
+		if !argument.Supported {
+			return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method input argument %d (%s) has unsupported DataType %q", i+1, argument.Name, argument.DataType))
+		}
+		inputs[i], err = opcua.ParseScalarValue(argument.DataType, request.InputArguments[i])
+		if err != nil {
+			parseErr := fmt.Errorf("parse Method input argument %d (%s): %w", i+1, argument.Name, err)
+			a.appendLog("error", fmt.Sprintf("Method call failed for Object Node %s Method Node %s: input argument %d failed validation", objectNodeID, methodNodeID, i+1))
+			return opcua.MethodCallResult{}, parseErr
+		}
+	}
+
+	// Recheck session safety after the metadata round trip and parsing so a
+	// mode change cannot be bypassed by a stale frontend request.
+	a.mu.Lock()
+	connected = a.connected
+	readOnly = a.readOnlyMode
+	clientChanged := a.client != client
+	a.mu.Unlock()
+	if !connected || clientChanged {
+		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method call requires the same connected session used to validate metadata"))
+	}
+	if readOnly {
+		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method call is blocked while Read-Only Mode is active"))
+	}
+
+	result, err := client.CallMethod(a.ctx, objectNodeID, methodNodeID, inputs)
+	if err != nil {
+		return a.methodCallFailure(objectNodeID, methodNodeID, err)
+	}
+	a.appendLog("info", fmt.Sprintf("Method call completed for Object Node %s Method Node %s StatusCode=%s", objectNodeID, methodNodeID, result.StatusCode))
+	return result, nil
+}
+
+func (a *App) methodCallFailure(objectNodeID, methodNodeID string, err error) (opcua.MethodCallResult, error) {
+	a.appendLog("error", fmt.Sprintf("Method call failed for Object Node %s Method Node %s: %v", objectNodeID, methodNodeID, err))
+	return opcua.MethodCallResult{}, err
 }
 
 func (a *App) InspectVariableNode(node opcua.AddressNode) error {

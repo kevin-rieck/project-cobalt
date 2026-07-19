@@ -111,6 +111,22 @@ func TestIntegrationReadMethodIOMetadata(t *testing.T) {
 	if len(details.OutputArguments) != 1 || details.OutputArguments[0].Name != "Sum" || details.OutputArguments[0].DataType != "UInt32" || details.OutputArguments[0].ValueRank != "Scalar" {
 		t.Fatalf("MethodIO outputs = %#v, want scalar UInt32 Sum", details.OutputArguments)
 	}
+
+	first, err := ParseScalarValue(details.InputArguments[0].DataType, "20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ParseScalarValue(details.InputArguments[1].DataType, "22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.CallMethod(ctx, objectNodeID, methodNodeID, []ScalarValue{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StatusCode != "StatusGood (0x0)" || len(result.OutputArguments) != 1 || result.OutputArguments[0].DataType != "UInt32" || result.OutputArguments[0].Value != "uint32(42)" {
+		t.Fatalf("MethodIO call result = %#v, want StatusGood and UInt32 output 42", result)
+	}
 }
 
 func TestIntegrationDiscoverEndpoints(t *testing.T) {

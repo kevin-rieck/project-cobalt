@@ -32,6 +32,19 @@ type MethodDetails struct {
 	OutputArguments []MethodArgument
 }
 
+// MethodCallResult is the display-safe projection of a Method execution result.
+type MethodCallResult struct {
+	StatusCode           string
+	InputArgumentResults []string
+	OutputArguments      []MethodArgumentValue
+}
+
+// MethodArgumentValue is one raw, display-only Method output.
+type MethodArgumentValue struct {
+	DataType string
+	Value    string
+}
+
 func (c *gopcuaClient) ReadMethodDetails(ctx context.Context, objectNodeID, methodNodeID string) (MethodDetails, error) {
 	if c.client == nil {
 		return MethodDetails{}, ua.StatusBadServerNotConnected
@@ -190,4 +203,86 @@ func supportedMethodDataType(dataType string) bool {
 	default:
 		return false
 	}
+}
+
+// CallMethod executes one Method with already parsed scalar inputs.
+func (c *gopcuaClient) CallMethod(ctx context.Context, objectNodeID, methodNodeID string, inputs []ScalarValue) (MethodCallResult, error) {
+	if c.client == nil {
+		return MethodCallResult{}, ua.StatusBadServerNotConnected
+	}
+	parsedObjectNodeID, err := ua.ParseNodeID(objectNodeID)
+	if err != nil {
+		return MethodCallResult{}, fmt.Errorf("invalid Object Node ID: %w", err)
+	}
+	parsedMethodNodeID, err := ua.ParseNodeID(methodNodeID)
+	if err != nil {
+		return MethodCallResult{}, fmt.Errorf("invalid Method Node ID: %w", err)
+	}
+
+	arguments := make([]*ua.Variant, len(inputs))
+	for i, input := range inputs {
+		arguments[i], err = ua.NewVariant(input.Value)
+		if err != nil {
+			return MethodCallResult{}, fmt.Errorf("encode Method input argument %d: %w", i+1, err)
+		}
+	}
+	request := &ua.CallMethodRequest{ObjectID: parsedObjectNodeID, MethodID: parsedMethodNodeID, InputArguments: arguments}
+	call := c.callMethod
+	if call == nil {
+		call = c.client.Call
+	}
+	response, err := call(ctx, request)
+	if err != nil {
+		return MethodCallResult{}, err
+	}
+	if response == nil {
+		return MethodCallResult{}, fmt.Errorf("call Method returned an empty result")
+	}
+	return methodCallResultFromUA(response), nil
+}
+
+func methodCallResultFromUA(result *ua.CallMethodResult) MethodCallResult {
+	projected := MethodCallResult{
+		StatusCode:           statusCodeText(result.StatusCode),
+		InputArgumentResults: make([]string, len(result.InputArgumentResults)),
+		OutputArguments:      make([]MethodArgumentValue, len(result.OutputArguments)),
+	}
+	for i, status := range result.InputArgumentResults {
+		projected.InputArgumentResults[i] = statusCodeText(status)
+	}
+	for i, output := range result.OutputArguments {
+		if output == nil {
+			projected.OutputArguments[i] = MethodArgumentValue{DataType: "Null", Value: "<nil>"}
+			continue
+		}
+		projected.OutputArguments[i] = MethodArgumentValue{
+			DataType: variantDataTypeName(output.Type()),
+			Value:    fmt.Sprintf("%T(%v)", output.Value(), output.Value()),
+		}
+	}
+	return projected
+}
+
+func variantDataTypeName(dataType ua.TypeID) string {
+	name := strings.TrimPrefix(dataType.String(), "TypeID")
+	name = strings.Replace(name, "Uint", "UInt", 1)
+	switch name {
+	case "GUID":
+		return "Guid"
+	case "XMLElement":
+		return "XmlElement"
+	case "NodeID":
+		return "NodeId"
+	case "ExpandedNodeID":
+		return "ExpandedNodeId"
+	default:
+		return name
+	}
+}
+
+func statusCodeText(status ua.StatusCode) string {
+	if description, ok := ua.StatusCodes[status]; ok {
+		return fmt.Sprintf("%s (0x%X)", description.Name, uint32(status))
+	}
+	return fmt.Sprintf("0x%X", uint32(status))
 }

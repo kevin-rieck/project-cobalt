@@ -27,6 +27,7 @@ type Client interface {
 	BrowseChildren(ctx context.Context, nodeID string) ([]AddressNode, error)
 	ReadNodeDetails(ctx context.Context, nodeID string) (NodeDetails, error)
 	ReadMethodDetails(ctx context.Context, objectNodeID, methodNodeID string) (MethodDetails, error)
+	CallMethod(ctx context.Context, objectNodeID, methodNodeID string, inputs []ScalarValue) (MethodCallResult, error)
 	ReadValue(ctx context.Context, nodeID string) (LiveValue, error)
 	WriteValue(ctx context.Context, nodeID string, value ScalarValue) error
 	SubscribeValue(ctx context.Context, nodeID string) (<-chan LiveValue, ValueSubscription, error)
@@ -117,6 +118,7 @@ type gopcuaClient struct {
 	readFile      func(string) ([]byte, error)
 	getEndpoints  func(context.Context, string) ([]*ua.EndpointDescription, error)
 	connectClient func(*gopcua.Client, context.Context) error
+	callMethod    func(context.Context, *ua.CallMethodRequest) (*ua.CallMethodResult, error)
 }
 
 func (c *gopcuaClient) DiscoverEndpoints(ctx context.Context, endpoint string) ([]Endpoint, error) {

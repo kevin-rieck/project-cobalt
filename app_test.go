@@ -40,11 +40,22 @@ type recordingClient struct {
 	methodDetailRequests []MethodNodeRequest
 	writeErrors          map[string]error
 	writeRequests        []recordedWrite
+	methodCallResult     opcua.MethodCallResult
+	methodCallErr        error
+	methodCallRequests   []recordedMethodCall
+	methodCallStarted    chan struct{}
+	methodCallRelease    <-chan struct{}
 }
 
 type recordedWrite struct {
 	nodeID string
 	value  opcua.ScalarValue
+}
+
+type recordedMethodCall struct {
+	objectNodeID string
+	methodNodeID string
+	inputs       []opcua.ScalarValue
 }
 
 func (c *recordingClient) DiscoverEndpoints(context.Context, string) ([]opcua.Endpoint, error) {
@@ -138,6 +149,22 @@ func (c *recordingClient) WriteValue(_ context.Context, nodeID string, value opc
 	defer c.mu.Unlock()
 	c.writeRequests = append(c.writeRequests, recordedWrite{nodeID: nodeID, value: value})
 	return c.writeErrors[nodeID]
+}
+
+func (c *recordingClient) CallMethod(_ context.Context, objectNodeID, methodNodeID string, inputs []opcua.ScalarValue) (opcua.MethodCallResult, error) {
+	c.mu.Lock()
+	copiedInputs := append([]opcua.ScalarValue{}, inputs...)
+	c.methodCallRequests = append(c.methodCallRequests, recordedMethodCall{objectNodeID: objectNodeID, methodNodeID: methodNodeID, inputs: copiedInputs})
+	result, err := c.methodCallResult, c.methodCallErr
+	started, release := c.methodCallStarted, c.methodCallRelease
+	c.mu.Unlock()
+	if started != nil {
+		close(started)
+	}
+	if release != nil {
+		<-release
+	}
+	return result, err
 }
 
 func (c *recordingClient) SubscribeValue(context.Context, string) (<-chan opcua.LiveValue, opcua.ValueSubscription, error) {
@@ -572,6 +599,173 @@ func TestGetMethodDetailsRequiresConnectionButIsAllowedInReadOnlyMode(t *testing
 	}
 	if len(client.methodDetailRequests) != 1 || client.methodDetailRequests[0] != request {
 		t.Fatalf("ReadMethodDetails requests = %#v, want %#v", client.methodDetailRequests, request)
+	}
+}
+
+func TestCallMethodRevalidatesMetadataAndForwardsTypedInputs(t *testing.T) {
+	const objectNodeID = "ns=3;s=Methods"
+	const methodNodeID = "ns=3;s=MethodIO"
+	key := objectNodeID + "\x00" + methodNodeID
+	details := opcua.MethodDetails{
+		ObjectNodeID: objectNodeID, MethodNodeID: methodNodeID, Executable: true, UserExecutable: true,
+		InputArguments: []opcua.MethodArgument{
+			{Name: "Summand1", DataType: "UInt32", ValueRank: "Scalar", Supported: true},
+			{Name: "Summand2", DataType: "UInt32", ValueRank: "Scalar", Supported: true},
+		},
+	}
+	wantResult := opcua.MethodCallResult{
+		StatusCode: "StatusGood (0x0)", InputArgumentResults: []string{"StatusGood (0x0)", "StatusGood (0x0)"},
+		OutputArguments: []opcua.MethodArgumentValue{{DataType: "UInt32", Value: "uint32(585987)"}},
+	}
+	client := &recordingClient{methodDetails: map[string]opcua.MethodDetails{key: details}, methodCallResult: wantResult}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+	app.connected = true
+	app.readOnlyMode = false
+
+	got, err := app.CallMethod(MethodCallRequest{ObjectNodeID: objectNodeID, MethodNodeID: methodNodeID, InputArguments: []string{"314159", "271828"}})
+	if err != nil {
+		t.Fatalf("CallMethod() error = %v", err)
+	}
+	if got.StatusCode != wantResult.StatusCode || len(got.OutputArguments) != 1 || got.OutputArguments[0].Value != "uint32(585987)" {
+		t.Fatalf("CallMethod() = %#v, want %#v", got, wantResult)
+	}
+	if len(client.methodDetailRequests) != 1 {
+		t.Fatalf("ReadMethodDetails requests = %#v, want fresh metadata read", client.methodDetailRequests)
+	}
+	if len(client.methodCallRequests) != 1 {
+		t.Fatalf("CallMethod requests = %#v, want one call", client.methodCallRequests)
+	}
+	call := client.methodCallRequests[0]
+	if call.objectNodeID != objectNodeID || call.methodNodeID != methodNodeID || len(call.inputs) != 2 || call.inputs[0].Value != uint32(314159) || call.inputs[1].Value != uint32(271828) {
+		t.Fatalf("forwarded Method call = %#v, want typed UInt32 inputs", call)
+	}
+	for _, entry := range app.GetDiagnosticLogs() {
+		if strings.Contains(entry.Message, "314159") || strings.Contains(entry.Message, "271828") {
+			t.Fatalf("diagnostic log leaked argument value: %q", entry.Message)
+		}
+	}
+}
+
+func TestCallMethodSafetyGatesPreventExecution(t *testing.T) {
+	const objectNodeID = "ns=2;s=Object"
+	const methodNodeID = "ns=2;s=Method"
+	valid := opcua.MethodDetails{Executable: true, UserExecutable: true, InputArguments: []opcua.MethodArgument{{Name: "Value", DataType: "UInt32", ValueRank: "Scalar", Supported: true}}}
+	tests := []struct {
+		name      string
+		connected bool
+		readOnly  bool
+		details   opcua.MethodDetails
+		inputs    []string
+		want      string
+	}{
+		{name: "disconnected", details: valid, inputs: []string{"42"}, want: "connected session"},
+		{name: "Read-Only Mode", connected: true, readOnly: true, details: valid, inputs: []string{"42"}, want: "Read-Only Mode"},
+		{name: "not executable", connected: true, details: func() opcua.MethodDetails { d := valid; d.Executable = false; return d }(), inputs: []string{"42"}, want: "not executable"},
+		{name: "not user executable", connected: true, details: func() opcua.MethodDetails { d := valid; d.UserExecutable = false; return d }(), inputs: []string{"42"}, want: "not executable"},
+		{name: "argument count", connected: true, details: valid, inputs: nil, want: "exactly 1 input"},
+		{name: "unsupported type", connected: true, details: opcua.MethodDetails{Executable: true, UserExecutable: true, InputArguments: []opcua.MethodArgument{{DataType: "DateTime", ValueRank: "Scalar"}}}, inputs: []string{"now"}, want: "unsupported DataType"},
+		{name: "array", connected: true, details: opcua.MethodDetails{Executable: true, UserExecutable: true, InputArguments: []opcua.MethodArgument{{DataType: "UInt32", ValueRank: "One-dimensional array"}}}, inputs: []string{"42"}, want: "non-scalar"},
+		{name: "invalid value", connected: true, details: valid, inputs: []string{"314159-secret"}, want: "invalid UInt32"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := objectNodeID + "\x00" + methodNodeID
+			client := &recordingClient{methodDetails: map[string]opcua.MethodDetails{key: tt.details}}
+			app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+			app.client = client
+			app.connected = tt.connected
+			app.readOnlyMode = tt.readOnly
+
+			_, err := app.CallMethod(MethodCallRequest{ObjectNodeID: objectNodeID, MethodNodeID: methodNodeID, InputArguments: tt.inputs})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("CallMethod() error = %v, want containing %q", err, tt.want)
+			}
+			if len(client.methodCallRequests) != 0 {
+				t.Fatalf("CallMethod requests = %#v, want safety gate to prevent execution", client.methodCallRequests)
+			}
+			for _, input := range tt.inputs {
+				for _, entry := range app.GetDiagnosticLogs() {
+					if input != "" && strings.Contains(entry.Message, input) {
+						t.Fatalf("diagnostic log leaked rejected argument value: %q", entry.Message)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCallMethodSerializesReadOnlyTransitionWithExecution(t *testing.T) {
+	const objectNodeID = "ns=2;s=Object"
+	const methodNodeID = "ns=2;s=Method"
+	key := objectNodeID + "\x00" + methodNodeID
+	started := make(chan struct{})
+	release := make(chan struct{})
+	client := &recordingClient{
+		methodDetails:     map[string]opcua.MethodDetails{key: {Executable: true, UserExecutable: true}},
+		methodCallStarted: started,
+		methodCallRelease: release,
+	}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+	app.connected = true
+	app.readOnlyMode = false
+
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := app.CallMethod(MethodCallRequest{ObjectNodeID: objectNodeID, MethodNodeID: methodNodeID})
+		callDone <- err
+	}()
+	<-started
+
+	modeChangeDone := make(chan error, 1)
+	go func() { modeChangeDone <- app.SetReadOnlyMode(true) }()
+	select {
+	case err := <-modeChangeDone:
+		t.Fatalf("SetReadOnlyMode(true) completed during Method execution: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-callDone; err != nil {
+		t.Fatalf("CallMethod() error = %v", err)
+	}
+	if err := <-modeChangeDone; err != nil {
+		t.Fatalf("SetReadOnlyMode(true) error = %v", err)
+	}
+	if safety := app.GetSessionSafety(); !safety.ReadOnlyMode {
+		t.Fatalf("GetSessionSafety() = %#v, want Read-Only Mode after execution", safety)
+	}
+}
+
+func TestCallMethodReturnsNonGoodStatusAndReportsRedactedTransportFailure(t *testing.T) {
+	const objectNodeID = "ns=2;s=Object"
+	const methodNodeID = "ns=2;s=Method"
+	key := objectNodeID + "\x00" + methodNodeID
+	details := opcua.MethodDetails{Executable: true, UserExecutable: true, InputArguments: []opcua.MethodArgument{{DataType: "String", ValueRank: "Scalar", Supported: true}}}
+	client := &recordingClient{
+		methodDetails:    map[string]opcua.MethodDetails{key: details},
+		methodCallResult: opcua.MethodCallResult{StatusCode: "BadInvalidArgument (0x80AB0000)", InputArgumentResults: []string{"BadTypeMismatch (0x80740000)"}},
+	}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+	app.connected = true
+	app.readOnlyMode = false
+
+	result, err := app.CallMethod(MethodCallRequest{ObjectNodeID: objectNodeID, MethodNodeID: methodNodeID, InputArguments: []string{"TOP-SECRET"}})
+	if err != nil || result.StatusCode != "BadInvalidArgument (0x80AB0000)" {
+		t.Fatalf("CallMethod() = (%#v, %v), want displayable non-Good result", result, err)
+	}
+
+	client.methodCallErr = errors.New("transport unavailable for TOP-SECRET")
+	_, err = app.CallMethod(MethodCallRequest{ObjectNodeID: objectNodeID, MethodNodeID: methodNodeID, InputArguments: []string{"TOP-SECRET"}})
+	if err == nil || !strings.Contains(err.Error(), "transport unavailable for TOP-SECRET") {
+		t.Fatalf("CallMethod() transport error = %v", err)
+	}
+	for _, entry := range app.GetDiagnosticLogs() {
+		if strings.Contains(entry.Message, "TOP-SECRET") {
+			t.Fatalf("diagnostic log leaked argument value: %q", entry.Message)
+		}
 	}
 }
 

@@ -667,6 +667,7 @@ func TestCallMethodSafetyGatesPreventExecution(t *testing.T) {
 		{name: "unsupported type", connected: true, details: opcua.MethodDetails{Executable: true, UserExecutable: true, InputArguments: []opcua.MethodArgument{{DataType: "DateTime", ValueRank: "Scalar"}}}, inputs: []string{"now"}, want: "unsupported DataType"},
 		{name: "array", connected: true, details: opcua.MethodDetails{Executable: true, UserExecutable: true, InputArguments: []opcua.MethodArgument{{DataType: "UInt32", ValueRank: "One-dimensional array"}}}, inputs: []string{"42"}, want: "non-scalar"},
 		{name: "invalid value", connected: true, details: valid, inputs: []string{"314159-secret"}, want: "invalid UInt32"},
+		{name: "underflow", connected: true, details: opcua.MethodDetails{Executable: true, UserExecutable: true, InputArguments: []opcua.MethodArgument{{Name: "Value", DataType: "Double", ValueRank: "Scalar", Supported: true}}}, inputs: []string{"1e-999"}, want: "invalid Double"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -858,6 +859,27 @@ func TestWriteVariableNodeValueWritesTypedScalarAndRefreshesReadBack(t *testing.
 	selected, _ := app.inspections.Selected()
 	if selected.Value.Value != "42" || selected.UpdateCount != 2 || selected.Stale {
 		t.Fatalf("selected inspection after write = %#v", selected)
+	}
+}
+
+func TestWriteVariableNodeValueRejectsFloatUnderflowBeforeWriting(t *testing.T) {
+	node := opcua.AddressNode{NodeID: "ns=2;s=Level", DisplayName: "Tank Level", NodeClass: "Variable"}
+	details := opcua.NodeDetails{NodeID: node.NodeID, DataType: "Float", Writable: true, ValueRank: "Scalar"}
+	client := &recordingClient{readDetails: map[string]opcua.NodeDetails{node.NodeID: details}}
+	app := NewAppWithSavedConnectionStore(t.TempDir() + "/saved-connections.json")
+	app.client = client
+	app.connected = true
+	app.readOnlyMode = false
+	app.inspections.Select(node)
+	app.inspections.ApplyDetails(node.NodeID, details, nil)
+	app.inspections.ApplyLiveValue(node.NodeID, opcua.LiveValue{NodeID: node.NodeID, Value: "1", Status: "Good"}, nil)
+
+	_, err := app.WriteVariableNodeValue(VariableNodeWriteRequest{NodeID: node.NodeID, TargetValue: "1e-50"})
+	if err == nil || !strings.Contains(err.Error(), "invalid Float") {
+		t.Fatalf("WriteVariableNodeValue() error = %v, want invalid Float", err)
+	}
+	if len(client.writeRequests) != 0 {
+		t.Fatalf("write requests = %#v, want underflow rejected before client write", client.writeRequests)
 	}
 }
 

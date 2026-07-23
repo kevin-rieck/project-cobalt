@@ -99,8 +99,15 @@ func parseFloatScalar(dataType string, target string, bitSize int) (float64, err
 		return 0, fmt.Errorf("invalid %s target value: %q", dataType, target)
 	}
 	value, err := strconv.ParseFloat(trimmed, bitSize)
-	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || (value == 0 && decimalSignificandIsNonzero(trimmed)) {
 		return 0, fmt.Errorf("invalid %s target value: %q", dataType, target)
 	}
 	return value, nil
+}
+
+func decimalSignificandIsNonzero(value string) bool {
+	if exponent := strings.IndexAny(value, "eE"); exponent >= 0 {
+		value = value[:exponent]
+	}
+	return strings.ContainsAny(value, "123456789")
 }

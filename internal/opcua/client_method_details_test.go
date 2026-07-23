@@ -39,6 +39,22 @@ func TestMethodAttributesExposeDescriptionAndExecutableState(t *testing.T) {
 	}
 }
 
+func TestMethodAttributesAllowUnsupportedOptionalDescription(t *testing.T) {
+	details := MethodDetails{}
+	attrs := []*ua.DataValue{
+		{Status: ua.StatusBadAttributeIDInvalid},
+		{Status: ua.StatusOK, Value: ua.MustVariant(true)},
+		{Status: ua.StatusOK, Value: ua.MustVariant(true)},
+	}
+
+	if err := applyMethodAttributes(&details, attrs); err != nil {
+		t.Fatalf("applyMethodAttributes() error = %v, want unsupported optional Description to be ignored", err)
+	}
+	if details.Description != "" || !details.Executable || !details.UserExecutable {
+		t.Fatalf("Method attributes = %#v, want empty description and executable state", details)
+	}
+}
+
 func TestMethodArgumentsPreserveDeclaredOrderAndMetadata(t *testing.T) {
 	value := ua.MustVariant([]*ua.ExtensionObject{
 		ua.NewExtensionObject(&ua.Argument{

@@ -1,6 +1,9 @@
 package opcua
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestParseScalarValueUsesSupportedTypeRules(t *testing.T) {
 	tests := []struct {
@@ -19,8 +22,13 @@ func TestParseScalarValueUsesSupportedTypeRules(t *testing.T) {
 		{name: "UInt16", dataType: "UInt16", target: "65535", want: uint16(65535), normalized: "65535"},
 		{name: "UInt32", dataType: "UInt32", target: "4294967295", want: uint32(4294967295), normalized: "4294967295"},
 		{name: "UInt64", dataType: "UInt64", target: "18446744073709551615", want: uint64(18446744073709551615), normalized: "18446744073709551615"},
-		{name: "Float exponent", dataType: "Float", target: "1e-3", want: float32(0.001), normalized: "0.001"},
-		{name: "Double", dataType: "Double", target: "3.14", want: float64(3.14), normalized: "3.14"},
+		{name: "Float exponent", dataType: "Float", target: "1.25e-3", want: float32(0.00125), normalized: "0.00125"},
+		{name: "Float smallest subnormal", dataType: "Float", target: "1e-45", want: float32(math.SmallestNonzeroFloat32), normalized: "1e-45"},
+		{name: "Double exponent", dataType: "Double", target: "-.5E+2", want: float64(-50), normalized: "-50"},
+		{name: "Double smallest subnormal", dataType: "Double", target: "5e-324", want: math.SmallestNonzeroFloat64, normalized: "5e-324"},
+		{name: "Float integer zero", dataType: "Float", target: "0", want: float32(0), normalized: "0"},
+		{name: "Float decimal zero", dataType: "Float", target: "0.0", want: float32(0), normalized: "0"},
+		{name: "Double exponent zero", dataType: "Double", target: "0e-999", want: float64(0), normalized: "0"},
 		{name: "String preserves whitespace", dataType: "String", target: "  Pump A  ", want: "  Pump A  ", normalized: "  Pump A  "},
 		{name: "String empty", dataType: "String", target: "", want: "", normalized: ""},
 	}
@@ -48,7 +56,11 @@ func TestParseScalarValueRejectsUnsupportedAndInvalidValues(t *testing.T) {
 		{dataType: "Int32", target: "1.0"},
 		{dataType: "Byte", target: "256"},
 		{dataType: "Float", target: "0x1p2"},
+		{dataType: "Float", target: "1e50"},
+		{dataType: "Float", target: "1e-50"},
 		{dataType: "Double", target: "1_000"},
+		{dataType: "Double", target: "1e999"},
+		{dataType: "Double", target: "1e-999"},
 	}
 	for _, tt := range tests {
 		if _, err := ParseScalarValue(tt.dataType, tt.target); err == nil {

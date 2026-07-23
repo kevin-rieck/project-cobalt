@@ -112,6 +112,36 @@ export namespace main {
 	        this.message = source["message"];
 	    }
 	}
+	export class MethodCallRequest {
+	    objectNodeID: string;
+	    methodNodeID: string;
+	    inputArguments: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new MethodCallRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.objectNodeID = source["objectNodeID"];
+	        this.methodNodeID = source["methodNodeID"];
+	        this.inputArguments = source["inputArguments"];
+	    }
+	}
+	export class MethodNodeRequest {
+	    objectNodeID: string;
+	    methodNodeID: string;
+
+	    static createFrom(source: any = {}) {
+	        return new MethodNodeRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.objectNodeID = source["objectNodeID"];
+	        this.methodNodeID = source["methodNodeID"];
+	    }
+	}
 	export class SessionSafetyView {
 	    connected: boolean;
 	    readOnlyMode: boolean;
@@ -230,6 +260,7 @@ export namespace main {
 export namespace opcua {
 	
 	export class AddressNode {
+	    ParentNodeID: string;
 	    NodeID: string;
 	    DisplayName: string;
 	    BrowseName: string;
@@ -241,6 +272,7 @@ export namespace opcua {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ParentNodeID = source["ParentNodeID"];
 	        this.NodeID = source["NodeID"];
 	        this.DisplayName = source["DisplayName"];
 	        this.BrowseName = source["BrowseName"];
@@ -289,6 +321,120 @@ export namespace opcua {
 	        this.Status = source["Status"];
 	        this.SourceTimestamp = this.convertValues(source["SourceTimestamp"], null);
 	        this.ServerTimestamp = this.convertValues(source["ServerTimestamp"], null);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MethodArgument {
+	    Name: string;
+	    DataType: string;
+	    DataTypeID: string;
+	    ValueRank: string;
+	    Description: string;
+	    ArrayDimensions: number[];
+	    Supported: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new MethodArgument(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Name = source["Name"];
+	        this.DataType = source["DataType"];
+	        this.DataTypeID = source["DataTypeID"];
+	        this.ValueRank = source["ValueRank"];
+	        this.Description = source["Description"];
+	        this.ArrayDimensions = source["ArrayDimensions"];
+	        this.Supported = source["Supported"];
+	    }
+	}
+	export class MethodArgumentValue {
+	    DataType: string;
+	    Value: string;
+
+	    static createFrom(source: any = {}) {
+	        return new MethodArgumentValue(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.DataType = source["DataType"];
+	        this.Value = source["Value"];
+	    }
+	}
+	export class MethodCallResult {
+	    StatusCode: string;
+	    InputArgumentResults: string[];
+	    OutputArguments: MethodArgumentValue[];
+
+	    static createFrom(source: any = {}) {
+	        return new MethodCallResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.StatusCode = source["StatusCode"];
+	        this.InputArgumentResults = source["InputArgumentResults"];
+	        this.OutputArguments = this.convertValues(source["OutputArguments"], MethodArgumentValue);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MethodDetails {
+	    ObjectNodeID: string;
+	    MethodNodeID: string;
+	    Description: string;
+	    Executable: boolean;
+	    UserExecutable: boolean;
+	    InputArguments: MethodArgument[];
+	    OutputArguments: MethodArgument[];
+
+	    static createFrom(source: any = {}) {
+	        return new MethodDetails(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ObjectNodeID = source["ObjectNodeID"];
+	        this.MethodNodeID = source["MethodNodeID"];
+	        this.Description = source["Description"];
+	        this.Executable = source["Executable"];
+	        this.UserExecutable = source["UserExecutable"];
+	        this.InputArguments = this.convertValues(source["InputArguments"], MethodArgument);
+	        this.OutputArguments = this.convertValues(source["OutputArguments"], MethodArgument);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

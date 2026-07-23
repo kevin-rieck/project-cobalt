@@ -86,6 +86,9 @@ func applyMethodAttributes(details *MethodDetails, attrs []*ua.DataValue) error 
 		if attr == nil {
 			return fmt.Errorf("read Method %s: empty result", names[i])
 		}
+		if i == 0 && attr.Status == ua.StatusBadAttributeIDInvalid {
+			continue
+		}
 		if attr.Status != ua.StatusOK {
 			return fmt.Errorf("read Method %s: %w", names[i], attr.Status)
 		}
@@ -93,7 +96,9 @@ func applyMethodAttributes(details *MethodDetails, attrs []*ua.DataValue) error 
 			return fmt.Errorf("read Method %s: empty value", names[i])
 		}
 	}
-	details.Description = localizedTextValue(attrs[0].Value.Value())
+	if attrs[0].Status == ua.StatusOK {
+		details.Description = localizedTextValue(attrs[0].Value.Value())
+	}
 	var ok bool
 	details.Executable, ok = attrs[1].Value.Value().(bool)
 	if !ok {

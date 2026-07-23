@@ -8,6 +8,8 @@ import {search} from '../models';
 
 export function BrowseChildren(arg1:string):Promise<Array<opcua.AddressNode>>;
 
+export function CallMethod(arg1:main.MethodCallRequest):Promise<opcua.MethodCallResult>;
+
 export function ClearVariableNodeInspection():Promise<void>;
 
 export function Connect(arg1:main.ConnectionRequest):Promise<void>;
@@ -19,6 +21,8 @@ export function Disconnect():Promise<void>;
 export function DiscoverEndpoints(arg1:string):Promise<Array<opcua.Endpoint>>;
 
 export function GetDiagnosticLogs():Promise<Array<main.DiagnosticLogEntry>>;
+
+export function GetMethodDetails(arg1:main.MethodNodeRequest):Promise<opcua.MethodDetails>;
 
 export function GetSavedConnections():Promise<Array<connections.SavedConnection>>;
 

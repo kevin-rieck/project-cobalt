@@ -2,6 +2,8 @@
   import { onMount } from 'svelte'
   import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionSafety, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, RefreshVariableNodeValue, SaveSavedConnection, SearchAddressSpace, SetReadOnlyMode, UnwatchVariableNode, WatchVariableNode, WriteVariableNodeValue } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
+  import MethodCallPanel from './MethodCallPanel.svelte'
+  import { isSupportedScalarDataType, parseScalarInputError } from './scalarInput'
   import { getReadmeScreenshotState } from './readmeScreenshots'
 
   type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
@@ -17,6 +19,7 @@
   }
 
   type AddressNode = {
+    ParentNodeID: string
     NodeID: string
     DisplayName: string
     BrowseName: string
@@ -148,7 +151,7 @@
 
   const objectsRoot: TreeNode = {
     key: 'root:i=85',
-    node: { NodeID: 'i=85', DisplayName: 'Objects', BrowseName: 'Objects', NodeClass: 'Object' },
+    node: { ParentNodeID: '', NodeID: 'i=85', DisplayName: 'Objects', BrowseName: 'Objects', NodeClass: 'Object' },
     depth: 0,
     expanded: false,
     childrenLoaded: false,
@@ -197,6 +200,7 @@
   let writeError = ''
   let writeConfirmOpen = false
   let writeConfirmationSnapshot: WriteConfirmationSnapshot | null = null
+  let selectedMethod: AddressNode | null = null
 
   $: selectedEndpointInfo = endpoints[selectedEndpoint]
   $: selectedSecurityMode = selectedEndpointInfo?.SecurityMode?.replace('MessageSecurityMode', '').trim() || ''
@@ -347,6 +351,7 @@
       tree = [{ ...objectsRoot }]
       selectedNodeID = ''
       inspection = null
+      resetMethodState()
       watchlist = []
       sessionTrend = { nodes: [], points: [] }
       focusedTrendNodeID = ''
@@ -448,6 +453,7 @@
       tree = [{ ...objectsRoot }]
       selectedNodeID = ''
       inspection = null
+      resetMethodState()
       watchlist = []
       sessionTrend = { nodes: [], points: [] }
       focusedTrendNodeID = ''
@@ -460,12 +466,12 @@
   }
 
   async function setReadOnlyMode(enabled: boolean) {
-    if (!enabled && !window.confirm('Allow Variable Node Writes?\n\nThis enables Variable Node Writes until you disconnect or turn Read-Only Mode back on. Each write still requires confirmation.')) return
+    if (!enabled && !window.confirm('Allow changes to the OPC UA Server?\n\nThis enables Variable Node Writes and Method calls until you disconnect or turn Read-Only Mode back on. Variable Node Writes still require confirmation.')) return
     try {
       await SetReadOnlyMode(enabled)
       const sessionSafety = await GetSessionSafety()
       applySessionSafety(sessionSafety)
-      addToast('info', enabled ? 'Read-Only Mode enabled' : 'Writes allowed for this session')
+      addToast('info', enabled ? 'Read-Only Mode enabled' : 'Changes allowed for this session')
     } catch (error) {
       addToast('error', String(error))
     }
@@ -503,12 +509,7 @@
   }
 
   async function selectNode(item: TreeNode) {
-    selectedNodeID = item.node.NodeID
-    if (item.node.NodeClass === 'Variable') {
-      await InspectVariableNode(item.node)
-    } else {
-      await ClearVariableNodeInspection()
-    }
+    await activateAddressNode(item.node)
   }
 
   function resetSearchView() {
@@ -539,10 +540,18 @@
   }
 
   async function activateSearchResult(result: AddressSpaceSearchResult) {
-    selectedNodeID = result.node.NodeID
-    if (result.node.NodeClass === 'Variable') {
-      await InspectVariableNode(result.node)
+    await activateAddressNode(result.node)
+  }
+
+  async function activateAddressNode(node: AddressNode) {
+    selectedNodeID = nodeSelectionKey(node)
+    if (node.NodeClass === 'Variable') {
+      resetMethodState()
+      await InspectVariableNode(node)
+    } else if (node.NodeClass === 'Method') {
+      await activateMethod(node)
     } else {
+      resetMethodState()
       await ClearVariableNodeInspection()
     }
   }
@@ -559,7 +568,7 @@
 
   async function activateNode(item: TreeNode) {
     await selectNode(item)
-    if (item.node.NodeClass !== 'Variable') {
+    if (item.node.NodeClass !== 'Variable' && item.node.NodeClass !== 'Method') {
       await toggleNode(item)
     }
   }
@@ -594,6 +603,27 @@
     writeError = ''
     writeConfirmOpen = false
     writeConfirmationSnapshot = null
+  }
+
+  function nodeSelectionKey(node: AddressNode) {
+    return node.NodeClass === 'Method' ? `${node.ParentNodeID || ''}\u0000${node.NodeID}` : node.NodeID
+  }
+
+  function resetMethodState() {
+    selectedMethod = null
+  }
+
+  async function activateMethod(node: AddressNode) {
+    resetMethodState()
+    resetWriteState()
+    inspection = null
+    selectedMethod = node
+    await ClearVariableNodeInspection()
+  }
+
+  function methodObjectName() {
+    if (!selectedMethod?.ParentNodeID) return '—'
+    return tree.find(item => item.node.NodeID === selectedMethod?.ParentNodeID)?.node.DisplayName || selectedMethod.ParentNodeID
   }
 
   function openWriteConfirmation() {
@@ -661,7 +691,7 @@
     } else {
       if (current.details.ValueRank && current.details.ValueRank !== 'Scalar') reasons.push(`Only scalar Variable Node Writes are supported; ValueRank is ${current.details.ValueRank}.`)
       if (!current.details.Writable) reasons.push(current.details.WriteAvailability || 'Effective metadata says this Variable Node is not writable in this session.')
-      if (current.details.DataType && !isSupportedWriteDataType(current.details.DataType)) reasons.push(`Data type ${current.details.DataType} is not supported for Variable Node Write.`)
+      if (current.details.DataType && !isSupportedScalarDataType(current.details.DataType)) reasons.push(`Data type ${current.details.DataType} is not supported for Variable Node Write.`)
       if (!current.details.DataType) reasons.push('Data type is unavailable.')
     }
     if (current.stale) reasons.push('Current Live Value is stale.')
@@ -671,30 +701,8 @@
     return reasons
   }
 
-  function isSupportedWriteDataType(dataType: string) {
-    return ['Boolean', 'SByte', 'Int16', 'Int32', 'Int64', 'Byte', 'UInt16', 'UInt32', 'UInt64', 'Float', 'Double', 'String'].includes(dataType.trim())
-  }
-
   function parseWriteTargetError(dataType: string, target: string) {
-    const trimmed = target.trim()
-    if (!dataType || !isSupportedWriteDataType(dataType)) return ''
-    if (dataType === 'String') return ''
-    if (!trimmed) return 'Enter a Target Value.'
-    if (dataType === 'Boolean') return ['true', 'false', '1', '0', 'on', 'off', 'yes', 'no'].includes(trimmed.toLowerCase()) ? '' : 'Target Value must parse as Boolean.'
-    if (['Float', 'Double'].includes(dataType)) {
-      const decimalFloatPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
-      const parsed = Number(trimmed)
-      return decimalFloatPattern.test(trimmed) && Number.isFinite(parsed) ? '' : `Target Value must parse as ${dataType}.`
-    }
-    if (!/^[+]?\d+$/.test(trimmed) && ['Byte', 'UInt16', 'UInt32', 'UInt64'].includes(dataType)) return `Target Value must be an unsigned plain decimal integer for ${dataType}.`
-    if (!/^[+-]?\d+$/.test(trimmed)) return `Target Value must be a plain decimal integer for ${dataType}.`
-    const value = BigInt(trimmed)
-    const ranges: Record<string, [bigint, bigint]> = {
-      SByte: [BigInt('-128'), BigInt('127')], Int16: [BigInt('-32768'), BigInt('32767')], Int32: [BigInt('-2147483648'), BigInt('2147483647')], Int64: [BigInt('-9223372036854775808'), BigInt('9223372036854775807')],
-      Byte: [BigInt('0'), BigInt('255')], UInt16: [BigInt('0'), BigInt('65535')], UInt32: [BigInt('0'), BigInt('4294967295')], UInt64: [BigInt('0'), BigInt('18446744073709551615')]
-    }
-    const [min, max] = ranges[dataType]
-    return value < min || value > max ? `Target Value is outside ${dataType} range.` : ''
+    return parseScalarInputError(dataType, target, 'Target Value')
   }
 
   function writeTargetRangeWarning(current: Inspection | null, target: string) {
@@ -780,6 +788,7 @@
   function nodeIcon(nodeClass: string) {
     if (nodeClass === 'Variable') return 'monitoring'
     if (nodeClass === 'Object') return 'account_tree'
+    if (nodeClass === 'Method') return 'play_circle'
     return 'schema'
   }
 
@@ -879,9 +888,9 @@
       </div>
       <div class="flex items-center gap-sm">
         {#if connected}
-          <span class="rounded border border-outline-variant px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Writes Allowed'}</span>
+          <span class="rounded border border-outline-variant px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Changes Allowed'}</span>
           {#if readOnlyMode}
-            <button class="btn-secondary" on:click={() => setReadOnlyMode(false)}>Allow writes this session</button>
+            <button class="btn-secondary" on:click={() => setReadOnlyMode(false)}>Allow changes this session</button>
           {:else}
             <button class="btn-secondary" on:click={() => setReadOnlyMode(true)}>Read-Only Mode</button>
           {/if}
@@ -1028,7 +1037,7 @@
           {/if}
         </section>
       {:else if activeTab === 'address-space'}
-        <section class="grid h-full min-h-[600px] gap-lg xl:grid-cols-[minmax(320px,0.85fr)_minmax(380px,1.05fr)_minmax(420px,1.1fr)]">
+        <section class="grid h-full min-h-[600px] gap-lg xl:grid-cols-[minmax(240px,0.8fr)_minmax(280px,0.95fr)_minmax(360px,1.25fr)]">
           <div class="panel flex min-h-0 flex-col overflow-hidden">
             <div class="flex items-center justify-between border-b border-outline-variant p-md">
               <div><p class="label">Address Space</p><h2 class="text-xl font-semibold">Objects</h2></div>
@@ -1040,11 +1049,15 @@
               {:else}
                 {#each visibleTree as item (item.key)}
                   <div class="group flex items-center gap-xs rounded px-sm py-xs hover:bg-surface-container-high" style={`padding-left: ${8 + item.depth * 18}px`}>
-                    <button class="flex h-6 w-6 items-center justify-center rounded hover:bg-surface-container-highest" on:click={() => toggleNode(item)} title="Expand or collapse">
-                      {#if item.loading}<span class="text-xs text-primary">…</span>{:else}<span class="material-symbols-outlined text-[18px]">{item.expanded ? 'expand_more' : 'chevron_right'}</span>{/if}
-                    </button>
-                    <button class="min-w-0 flex-1 truncate rounded px-xs py-xs text-left {selectedNodeID === item.node.NodeID ? 'bg-secondary-container text-on-secondary-container' : 'text-on-surface'}" on:click={() => activateNode(item)}>
-                      <span class="mr-sm font-medium">{item.node.DisplayName}</span><span class="font-mono text-xs text-on-surface-variant">{item.node.NodeClass}</span>
+                    {#if item.node.NodeClass === 'Method'}
+                      <span class="material-symbols-outlined flex h-6 w-6 items-center justify-center text-[18px] text-primary" title="Method Node">play_circle</span>
+                    {:else}
+                      <button class="flex h-6 w-6 items-center justify-center rounded hover:bg-surface-container-highest" on:click={() => toggleNode(item)} title="Expand or collapse">
+                        {#if item.loading}<span class="text-xs text-primary">…</span>{:else}<span class="material-symbols-outlined text-[18px]">{item.expanded ? 'expand_more' : 'chevron_right'}</span>{/if}
+                      </button>
+                    {/if}
+                    <button aria-label={`${item.node.DisplayName} ${item.node.NodeClass}`} class="min-w-0 flex-1 truncate rounded px-xs py-xs text-left {selectedNodeID === nodeSelectionKey(item.node) ? 'bg-secondary-container text-on-secondary-container' : 'text-on-surface'}" on:click={() => activateNode(item)}>
+                      <span class="mr-sm font-medium">{item.node.DisplayName}</span><span class="font-mono text-xs {item.node.NodeClass === 'Method' ? 'text-primary' : 'text-on-surface-variant'}">{item.node.NodeClass}</span>
                     </button>
                   </div>
                   {#if item.error}<div class="ml-lg text-xs text-error">{item.error}</div>{/if}
@@ -1077,9 +1090,9 @@
                 </div>
               {:else}
                 <div class="space-y-md">
-                  {#each searchView.results as result (result.node.NodeID)}
-                    <div role="button" tabindex="0" class="group relative block w-full cursor-pointer overflow-hidden rounded-lg border border-outline-variant bg-surface-container p-md text-left transition-colors hover:border-primary/70 {selectedNodeID === result.node.NodeID ? 'border-primary bg-secondary-container/40' : ''}" on:click={() => activateSearchResult(result)} on:keydown={(event) => event.key === 'Enter' && activateSearchResult(result)}>
-                      <div class="absolute left-0 top-0 bottom-0 w-[2px] bg-primary {selectedNodeID === result.node.NodeID ? 'scale-y-100' : 'scale-y-0 group-hover:scale-y-100'} origin-top transition-transform"></div>
+                  {#each searchView.results as result (nodeSelectionKey(result.node))}
+                    <div role="button" tabindex="0" class="group relative block w-full cursor-pointer overflow-hidden rounded-lg border border-outline-variant bg-surface-container p-md text-left transition-colors hover:border-primary/70 {selectedNodeID === nodeSelectionKey(result.node) ? 'border-primary bg-secondary-container/40' : ''}" on:click={() => activateSearchResult(result)} on:keydown={(event) => event.key === 'Enter' && activateSearchResult(result)}>
+                      <div class="absolute left-0 top-0 bottom-0 w-[2px] bg-primary {selectedNodeID === nodeSelectionKey(result.node) ? 'scale-y-100' : 'scale-y-0 group-hover:scale-y-100'} origin-top transition-transform"></div>
                       <div class="flex items-start justify-between gap-md">
                         <div class="flex min-w-0 gap-sm">
                           <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-outline-variant bg-surface-container-high text-primary">
@@ -1111,7 +1124,7 @@
 
           <div class="panel flex min-h-0 flex-col overflow-hidden">
             <div class="flex items-center justify-between gap-md border-b border-outline-variant p-md">
-              <div class="min-w-0"><p class="label">Variable Node Inspection</p><h2 class="truncate text-xl font-semibold">{inspection?.node?.DisplayName ?? 'No Variable Node selected'}</h2></div>
+              <div class="min-w-0"><p class="label">{selectedMethod ? 'Method Call' : 'Variable Node Inspection'}</p><h2 class="truncate text-xl font-semibold">{selectedMethod?.DisplayName ?? inspection?.node?.DisplayName ?? 'No node selected'}</h2></div>
               {#if inspection}
                 <div class="flex shrink-0 items-center gap-sm">
                   <button class="btn-secondary" on:click={refreshInspectionValue} disabled={refreshingNodeID === inspection.node.NodeID}>{refreshingNodeID === inspection.node.NodeID ? 'Refreshing…' : 'Refresh current value'}</button>
@@ -1124,7 +1137,18 @@
               {/if}
             </div>
             <div class="min-h-0 flex-1 overflow-auto p-lg">
-              {#if inspection}
+              {#if selectedMethod}
+                {#key nodeSelectionKey(selectedMethod)}
+                  <MethodCallPanel
+                    {selectedMethod}
+                    objectNodeName={methodObjectName()}
+                    sessionName={currentConnection || endpointText || 'Current session'}
+                    {connected}
+                    {readOnlyMode}
+                    {addToast}
+                  />
+                {/key}
+              {:else if inspection}
                 <div class="grid gap-md lg:grid-cols-3">
                   <div class="panel bg-surface-container-low p-md"><p class="label">Live Value</p><p class="mt-sm font-mono text-2xl text-primary">{inspection.value?.Value || '—'}</p></div>
                   <div class="panel bg-surface-container-low p-md"><p class="label">Status</p><p class="mt-sm font-mono text-sm {inspection.stale ? 'text-tertiary' : 'text-emerald-400'}">{inspection.stale ? 'Stale' : inspection.value?.Status || 'Waiting'}</p></div>
@@ -1141,7 +1165,7 @@
                       <h3 class="mt-xs text-lg font-semibold">Write value</h3>
                       <p class="mt-xs text-sm text-on-surface-variant">Available only from Variable Node Inspection. Every write requires confirmation and cannot be submitted with Enter.</p>
                     </div>
-                    <span class="rounded px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Writes Allowed'}</span>
+                    <span class="rounded px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Changes Allowed'}</span>
                   </div>
                   <div class="mt-md grid gap-sm lg:grid-cols-[1fr_auto]">
                     <label class="space-y-xs">
@@ -1190,7 +1214,7 @@
                   </div>
                 </div>
               {:else}
-                <div class="flex h-full items-center justify-center text-on-surface-variant">Select a Variable Node from the Address Space to inspect its Live Value and metadata.</div>
+                <div class="flex h-full items-center justify-center text-center text-on-surface-variant">Select a Variable Node or Method Node from the Address Space to inspect it.</div>
               {/if}
             </div>
           </div>

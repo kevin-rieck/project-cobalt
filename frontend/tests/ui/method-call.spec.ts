@@ -104,6 +104,37 @@ test('invalid and unsupported arguments show visible disabled reasons', async ({
   await expect(page.getByRole('button', { name: 'Call Method' })).toBeDisabled()
 })
 
+test('Float and Double arguments accept valid forms and reject overflow and underflow', async ({ page }) => {
+  await stubMethodAPI(page, { details: {
+    ...methodDetails,
+    InputArguments: [
+      { ...methodDetails.InputArguments[0], Name: 'FloatValue', DataType: 'Float', DataTypeID: 'i=10' },
+      { ...methodDetails.InputArguments[1], Name: 'DoubleValue', DataType: 'Double', DataTypeID: 'i=11' }
+    ]
+  } })
+  await openMethod(page)
+
+  const callMethod = page.getByRole('button', { name: 'Call Method' })
+  await page.getByLabel('FloatValue').fill('1.25e-3')
+  await page.getByLabel('DoubleValue').fill('-.5E+2')
+  await expect(callMethod).toBeEnabled()
+
+  await page.getByLabel('FloatValue').fill('1e50')
+  await expect(page.getByText('FloatValue must parse as Float.', { exact: true })).toBeVisible()
+  await expect(callMethod).toBeDisabled()
+  await page.getByLabel('FloatValue').fill('1e-50')
+  await expect(page.getByText('FloatValue must parse as Float.', { exact: true })).toBeVisible()
+  await expect(callMethod).toBeDisabled()
+
+  await page.getByLabel('FloatValue').fill('3.5')
+  await page.getByLabel('DoubleValue').fill('1e999')
+  await expect(page.getByText('DoubleValue must parse as Double.', { exact: true })).toBeVisible()
+  await expect(callMethod).toBeDisabled()
+  await page.getByLabel('DoubleValue').fill('1e-999')
+  await expect(page.getByText('DoubleValue must parse as Double.', { exact: true })).toBeVisible()
+  await expect(callMethod).toBeDisabled()
+})
+
 test('loading, failed metadata, and non-executable states explain why calling is blocked', async ({ page }) => {
   await page.addInitScript(() => {
     const testWindow = window as typeof window & { go: unknown }
@@ -197,12 +228,57 @@ test('non-Good and transport failures remain visible inline with concise toasts'
   await expect(page.getByText('Method call failed: Error: transport unavailable', { exact: true }).first()).toBeVisible()
 })
 
+test('a lost session keeps the Method visible but blocks execution at the Wails seam', async ({ page }) => {
+  await page.addInitScript(({ details }) => {
+    type EventCallback = (...args: unknown[]) => void
+    const listeners = new Map<string, Set<EventCallback>>()
+    const testWindow = window as typeof window & { go: unknown; runtime: unknown; methodCalls: unknown[]; loseSession: () => void }
+    testWindow.methodCalls = []
+    const runtime = {
+      EventsOnMultiple(eventName: string, callback: EventCallback) {
+        const eventListeners = listeners.get(eventName) ?? new Set<EventCallback>()
+        eventListeners.add(callback)
+        listeners.set(eventName, eventListeners)
+        return () => eventListeners.delete(callback)
+      },
+      EventsEmit(eventName: string, ...args: unknown[]) {
+        listeners.get(eventName)?.forEach(callback => callback(...args))
+      }
+    }
+    testWindow.runtime = runtime
+    testWindow.loseSession = () => runtime.EventsEmit('session-safety-updated', { connected: false, readOnlyMode: false })
+    testWindow.go = { main: { App: {
+      GetDiagnosticLogs: () => Promise.resolve([]),
+      GetSavedConnections: () => Promise.resolve([]),
+      GetSessionSafety: () => Promise.resolve({ connected: true, readOnlyMode: false }),
+      GetSessionTrend: () => Promise.resolve({ nodes: [], points: [] }),
+      GetWatchlist: () => Promise.resolve([]),
+      GetMethodDetails: () => Promise.resolve(details),
+      CallMethod: (request: unknown) => { testWindow.methodCalls.push(request); return Promise.resolve({ StatusCode: 'StatusGood', InputArgumentResults: [], OutputArguments: [] }) },
+      ClearVariableNodeInspection: () => Promise.resolve()
+    } } }
+  }, { details: methodDetails })
+  await openMethod(page, 'tree', 'method-call-events')
+  await enterMethodInputs(page)
+  await page.evaluate(() => (window as typeof window & { loseSession: () => void }).loseSession())
+
+  await expect(page.getByRole('heading', { name: 'MethodIO', level: 2 })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Call Method' })).toBeDisabled()
+  await expect(page.getByText('Connect to an OPC UA Server before calling a Method.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Read-Only Mode is active.', { exact: true })).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { methodCalls: unknown[] }).methodCalls)).toEqual([])
+})
+
 test('disconnect clears the Method Call panel and transient inputs', async ({ page }) => {
   await stubMethodAPI(page)
   await openMethod(page)
-  await page.getByLabel('Summand1').fill('20')
+  await enterMethodInputs(page)
+  await page.getByRole('button', { name: 'Call Method' }).click()
+  await expect(page.getByText('uint32(42)', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Disconnect' }).click()
 
   await expect(page.getByRole('heading', { name: 'MethodIO', level: 2 })).toHaveCount(0)
+  await expect(page.getByLabel('Summand1')).toHaveCount(0)
+  await expect(page.getByText('uint32(42)', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Connect to an OPC UA Server' })).toBeVisible()
 })

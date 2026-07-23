@@ -210,7 +210,7 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
     inspection: inspectionForRequest(requested),
     confirmationInspectionUpdate: requested === 'write-confirmation-live-value-change' ? changedInspection : null,
     logs: [],
-    receiveRuntimeEvents: requested === 'write-feedback-events',
+    receiveRuntimeEvents: requested === 'write-feedback-events' || requested === 'method-call-events',
     watchlist,
     sessionTrend,
     focusedTrendNodeID: nodes.temp.NodeID,

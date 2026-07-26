@@ -15,6 +15,7 @@ const shots = [
   { name: 'hero.png', mode: 'hero', viewport: { width: 1600, height: 1000 } },
   { name: 'address-space-search.png', mode: 'search', viewport: { width: 1600, height: 1000 } },
   { name: 'variable-node-inspection.png', mode: 'inspection', viewport: { width: 1600, height: 1000 } },
+  { name: 'method-call.png', mode: 'method-call-read-only', viewport: { width: 1600, height: 1200 } },
   { name: 'watchlist.png', mode: 'watchlist', viewport: { width: 1600, height: 1000 } },
   { name: 'session-trend.png', mode: 'trend', viewport: { width: 1600, height: 1000 } },
   { name: 'connection-manager.png', mode: 'connections', viewport: { width: 1600, height: 1000 } }
@@ -59,6 +60,28 @@ try {
   if (serverExited) throw new Error('Vite exited before serving screenshots')
   browser = await chromium.launch()
   const page = await browser.newPage({ deviceScaleFactor: 1 })
+  await page.addInitScript(() => {
+    window.go = {
+      main: {
+        App: {
+          GetMethodDetails: async () => ({
+            ObjectNodeID: 'ns=3;s=Demo.CTT.Methods',
+            MethodNodeID: 'ns=3;s=Demo.CTT.Methods.MethodIO',
+            Description: 'Adds 2 unsigned integers',
+            Executable: true,
+            UserExecutable: true,
+            InputArguments: [
+              { Name: 'Summand1', DataType: 'UInt32', DataTypeID: 'i=7', ValueRank: 'Scalar', Description: 'First summand', ArrayDimensions: [], Supported: true },
+              { Name: 'Summand2', DataType: 'UInt32', DataTypeID: 'i=7', ValueRank: 'Scalar', Description: 'Second summand', ArrayDimensions: [], Supported: true }
+            ],
+            OutputArguments: [
+              { Name: 'Sum', DataType: 'UInt32', DataTypeID: 'i=7', ValueRank: 'Scalar', Description: 'Sum of both inputs', ArrayDimensions: [], Supported: true }
+            ]
+          })
+        }
+      }
+    }
+  })
 
   for (const shot of shots) {
     await page.setViewportSize(shot.viewport)

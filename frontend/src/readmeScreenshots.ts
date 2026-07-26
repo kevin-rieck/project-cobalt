@@ -165,7 +165,8 @@ export type ReadmeScreenshotState = {
   currentConnection: string
   tree: typeof tree
   selectedNodeID: string
-  inspection: typeof inspection
+  selectedMethod: AddressNode | null
+  inspection: typeof inspection | null
   confirmationInspectionUpdate: typeof inspection | null
   logs: Array<{ timestamp: string; level: string; message: string }>
   receiveRuntimeEvents: boolean
@@ -206,15 +207,16 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
     readOnlyMode: requested === 'method-call-read-only' || (!requested.startsWith('write-') && !requested.startsWith('method-call')) || requested === 'write-read-only',
     currentConnection: 'Control Gateway',
     tree,
-    selectedNodeID: nodes.temp.NodeID,
-    inspection: inspectionForRequest(requested),
+    selectedNodeID: requested.startsWith('method-call') ? nodes.methodIO.NodeID : nodes.temp.NodeID,
+    selectedMethod: requested.startsWith('method-call') ? nodes.methodIO : null,
+    inspection: requested.startsWith('method-call') ? null : inspectionForRequest(requested),
     confirmationInspectionUpdate: requested === 'write-confirmation-live-value-change' ? changedInspection : null,
     logs: [],
     receiveRuntimeEvents: requested === 'write-feedback-events' || requested === 'method-call-events',
     watchlist,
     sessionTrend,
     focusedTrendNodeID: nodes.temp.NodeID,
-    searchQuery: requested === 'connections' ? '' : 'filler',
+    searchQuery: requested === 'connections' ? '' : requested.startsWith('method-call') ? 'method' : 'filler',
     searchView: requested.startsWith('method-call')
       ? { query: 'method', results: methodSearchResults as typeof searchResults, status: '1 Search Result found in browsed Address Space metadata.' }
       : { query: 'filler', results: searchResults, status: '3 Search Results found in browsed Address Space metadata.' },

@@ -127,6 +127,33 @@ func TestIntegrationReadMethodIOMetadata(t *testing.T) {
 	if result.StatusCode != "StatusGood (0x0)" || len(result.OutputArguments) != 1 || result.OutputArguments[0].DataType != "UInt32" || result.OutputArguments[0].Value != "uint32(42)" {
 		t.Fatalf("MethodIO call result = %#v, want StatusGood and UInt32 output 42", result)
 	}
+
+	// Inspect every readable demo Method to cover empty signature edges without
+	// executing Methods whose effects are not described by server metadata.
+	signatures := map[string]bool{"input-only": false, "output-only": false, "no-argument": false}
+	for _, child := range children {
+		if child.NodeClass != "Method" {
+			continue
+		}
+		candidate, readErr := client.ReadMethodDetails(ctx, objectNodeID, child.NodeID)
+		if readErr != nil {
+			t.Logf("Method metadata unavailable for %s: %v", child.NodeID, readErr)
+			continue
+		}
+		switch {
+		case len(candidate.InputArguments) > 0 && len(candidate.OutputArguments) == 0:
+			signatures["input-only"] = true
+		case len(candidate.InputArguments) == 0 && len(candidate.OutputArguments) > 0:
+			signatures["output-only"] = true
+		case len(candidate.InputArguments) == 0 && len(candidate.OutputArguments) == 0:
+			signatures["no-argument"] = true
+		}
+	}
+	for signature, found := range signatures {
+		if !found {
+			t.Errorf("no readable %s Method found below %s", signature, objectNodeID)
+		}
+	}
 }
 
 func TestIntegrationDiscoverEndpoints(t *testing.T) {

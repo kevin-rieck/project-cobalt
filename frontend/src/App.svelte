@@ -200,7 +200,7 @@
   let writeError = ''
   let writeConfirmOpen = false
   let writeConfirmationSnapshot: WriteConfirmationSnapshot | null = null
-  let selectedMethod: AddressNode | null = null
+  let selectedMethod: AddressNode | null = (readmeScreenshotState?.selectedMethod as AddressNode) ?? null
 
   $: selectedEndpointInfo = endpoints[selectedEndpoint]
   $: selectedSecurityMode = selectedEndpointInfo?.SecurityMode?.replace('MessageSecurityMode', '').trim() || ''

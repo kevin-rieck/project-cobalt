@@ -60,6 +60,14 @@ _Avoid_: Asset, device card, folder
 A node in the Address Space that represents a readable, and sometimes writable, process value or state.
 _Avoid_: Tag, point, field
 
+**Method Node**:
+A node in the Address Space that represents an operation exposed by an OPC UA Server and is called in the context of an owning Object Node.
+_Avoid_: Action, command, function, endpoint
+
+**Method Call**:
+A deliberate request to execute a Method Node for its owning Object Node with ordered input arguments, producing a StatusCode and ordered output arguments.
+_Avoid_: Command execution, action run, function invocation
+
 **Observed Variable Node**:
 A Variable Node whose Live Value is watched during the current Troubleshooting Session and remains available in Session Trend.
 _Avoid_: Inspected node, trended node, sampled node, monitored node

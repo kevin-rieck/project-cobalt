@@ -15,6 +15,7 @@ OPC UA Studio helps automation engineers run a focused Troubleshooting Session a
 - keep important Variable Nodes in a Watchlist
 - review temporary Session Trend history from observed Live Value updates
 - deliberately write one supported scalar value to one writable Variable Node when Read-Only Mode is disabled
+- inspect and call discovered Method Nodes with supported scalar inputs when Read-Only Mode is disabled
 
 ## Features
 
@@ -28,7 +29,13 @@ Address Space Search finds Search Results from browsed metadata such as `Display
 
 ![Variable Node Inspection](docs/assets/readme/variable-node-inspection.png)
 
-Variable Node Inspection combines the current Live Value with status, timestamps, engineering unit, range metadata, stale state, and out-of-range state. OPC UA Studio starts each session in Read-Only Mode. After explicitly allowing writes for the connected session, Variable Node Write can change one supported scalar value on one writable Variable Node from the inspection view, requires confirmation, and refreshes the current value with a read-back result.
+Variable Node Inspection combines the current Live Value with status, timestamps, engineering unit, range metadata, stale state, and out-of-range state. OPC UA Studio starts each session in Read-Only Mode. After explicitly allowing changes for the connected session, Variable Node Write can change one supported scalar value on one writable Variable Node from the inspection view, requires confirmation, and refreshes the current value with a read-back result.
+
+### Inspect and call Methods
+
+![Method Call](docs/assets/readme/method-call.png)
+
+Selecting a discovered Method Node opens its Method Call panel with the owning Object Node, executable state, and ordered input/output metadata. Calls require leaving Read-Only Mode and an explicit click after reviewing the target and inputs. Supported scalar inputs are Boolean, String, signed and unsigned integers, Float, and Double. Arrays, matrices, optional or null values, structures, custom DataTypes, and other built-in DataTypes are displayed but cannot be entered in v1. Returned StatusCodes and output arguments are shown as raw values.
 
 ### Keep a troubleshooting Watchlist
 
@@ -78,6 +85,18 @@ npm run screenshots:readme
 ```
 
 This writes images to `docs/assets/readme/`.
+
+### Validate Method calls against the demo server
+
+The opt-in integration test uses the Unified Automation C++ demo server at `opc.tcp://localhost:48010`. Start that server, then run:
+
+```sh
+TERMUA_METHOD_TEST_ENDPOINT=opc.tcp://localhost:48010 go test ./internal/opcua -run Method -count=1 -v
+```
+
+The tracer inspects the input-only, output-only, and no-argument signatures exposed below `ns=3;s=Demo.CTT.Methods`. It executes only the known `MethodIO` tracer (`ns=3;s=Demo.CTT.Methods.MethodIO`), sending UInt32 values `20` and `22` and requiring `StatusGood` with `uint32(42)`.
+
+Anonymous connections using SecurityPolicy None are sufficient for this tracer. Some vendor demo Methods expose argument properties only over a secure channel and return `BadSecurityModeInsufficient` over None; OPC UA Studio reports those metadata failures rather than treating them as empty signatures. The tracer therefore logs unreadable Methods while requiring a readable example of each empty-signature edge. This validation does not broaden v1 input DataType support.
 
 ## Project docs
 

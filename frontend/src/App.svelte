@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { BrowseChildren, ClearVariableNodeInspection, Connect, DeleteSavedConnection, Disconnect, DiscoverEndpoints, GetDiagnosticLogs, GetSavedConnections, GetSessionSafety, GetSessionTrend, GetWatchlist, InspectVariableNode, PickClientCertificate, PickClientPrivateKey, RefreshVariableNodeValue, SaveSavedConnection, SearchAddressSpace, SetReadOnlyMode, UnwatchVariableNode, WatchVariableNode, WriteVariableNodeValue } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
   import MethodCallPanel from './MethodCallPanel.svelte'
   import { isSupportedScalarDataType, parseScalarInputError } from './scalarInput'
   import { getReadmeScreenshotState } from './readmeScreenshots'
 
-  type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
+  type Tab = 'connections' | 'address-space' | 'search' | 'watchlist' | 'session-trend' | 'logs'
   type AuthType = 'Anonymous' | 'UserName'
 
   type Endpoint = {
@@ -193,6 +193,7 @@
   let searchView: AddressSpaceSearchView = (readmeScreenshotState?.searchView as AddressSpaceSearchView) ?? { query: '', results: [], status: 'Connect to an OPC UA Server to search browsed Address Space metadata.' }
   let searching = false
   let searchDebounce: ReturnType<typeof setTimeout> | null = null
+  let searchInput: HTMLInputElement | null = null
   let refreshingNodeID = ''
   let writeTargetValue = ''
   let writeSubmitting = false
@@ -520,7 +521,15 @@
     searchDebounce = null
   }
 
+  async function openSearchFromSidebar() {
+    activeTab = 'search'
+    if (!connected) return
+    await tick()
+    searchInput?.focus()
+  }
+
   function queueAddressSpaceSearch() {
+    activeTab = 'search'
     if (searchDebounce) clearTimeout(searchDebounce)
     searchDebounce = setTimeout(() => {
       void runAddressSpaceSearch()
@@ -862,6 +871,9 @@
       <button class={navButtonClass(activeTab === 'address-space')} on:click={() => (activeTab = 'address-space')}>
         <span class="material-symbols-outlined">account_tree</span><span class="label text-current">Address Space</span>
       </button>
+      <button aria-label="Search" class={navButtonClass(activeTab === 'search')} on:click={openSearchFromSidebar}>
+        <span class="material-symbols-outlined">search</span><span class="label text-current">Search</span>
+      </button>
       <button class={navButtonClass(activeTab === 'watchlist')} on:click={() => (activeTab = 'watchlist')}>
         <span class="material-symbols-outlined">analytics</span><span class="label text-current">Watchlist</span>
       </button>
@@ -883,7 +895,7 @@
         <span class="text-xl font-bold tracking-tight text-primary">OPC UA Studio</span>
         <div class="hidden w-72 items-center rounded border border-outline-variant bg-surface-container px-sm py-xs md:flex">
           <span class="material-symbols-outlined mr-sm text-[18px] text-on-surface-variant">search</span>
-          <input class="w-full bg-transparent text-sm outline-none placeholder:text-on-surface-variant" placeholder="Search Address Space..." bind:value={searchQuery} on:input={queueAddressSpaceSearch} on:focus={() => (activeTab = 'address-space')} />
+          <input aria-label="Search Address Space from header" class="w-full bg-transparent text-sm outline-none placeholder:text-on-surface-variant" placeholder="Search Address Space..." bind:value={searchQuery} disabled={!connected} on:input={queueAddressSpaceSearch} on:focus={() => (activeTab = 'search')} />
         </div>
       </div>
       <div class="flex items-center gap-sm">
@@ -1036,8 +1048,11 @@
             </div>
           {/if}
         </section>
-      {:else if activeTab === 'address-space'}
-        <section class="grid h-full min-h-[600px] gap-lg xl:grid-cols-[minmax(240px,0.8fr)_minmax(280px,0.95fr)_minmax(360px,1.25fr)]">
+      {:else if activeTab === 'address-space' || activeTab === 'search'}
+        <section class={activeTab === 'address-space'
+          ? 'grid h-full min-h-[600px] gap-lg xl:grid-cols-[360px_minmax(0,1fr)]'
+          : 'grid h-full min-h-[600px] gap-lg xl:grid-cols-[minmax(420px,0.9fr)_minmax(480px,1.1fr)]'}>
+          {#if activeTab === 'address-space'}
           <div class="panel flex min-h-0 flex-col overflow-hidden">
             <div class="flex items-center justify-between border-b border-outline-variant p-md">
               <div><p class="label">Address Space</p><h2 class="text-xl font-semibold">Objects</h2></div>
@@ -1066,6 +1081,7 @@
             </div>
           </div>
 
+          {:else}
           <div class="panel flex min-h-0 flex-col overflow-hidden">
             <div class="border-b border-outline-variant p-md">
               <p class="label">Search</p>
@@ -1073,18 +1089,21 @@
               <p class="mt-xs text-sm text-on-surface-variant">Search browsed metadata: DisplayName, BrowseName, NodeID, and NodeClass.</p>
               <div class="relative mt-md">
                 <span class="material-symbols-outlined absolute left-md top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
-                <input class="field w-full py-md pl-[48px] text-base" placeholder="Search Address Space…" bind:value={searchQuery} on:input={queueAddressSpaceSearch} />
+                <input bind:this={searchInput} aria-label="Search Address Space" class="field w-full py-md pl-[48px] text-base" placeholder="Search Address Space…" bind:value={searchQuery} disabled={!connected} on:input={queueAddressSpaceSearch} />
               </div>
             </div>
             <div class="min-h-0 flex-1 overflow-auto p-md">
-              {#if searching}
-                <div class="mb-md text-sm text-primary">Searching…</div>
-              {/if}
+              <div role="status" aria-live="polite">
+                {#if searching}
+                  <div class="mb-md text-sm text-primary">Searching…</div>
+                {/if}
+                <p class="mb-md text-sm text-on-surface-variant">{searchView.status}</p>
+              </div>
               {#if searchView.results.length === 0}
                 <div class="flex min-h-[260px] items-center justify-center rounded border border-dashed border-outline-variant bg-surface-container-low p-lg text-center text-on-surface-variant">
                   <div>
                     <span class="material-symbols-outlined text-3xl text-primary">manage_search</span>
-                    <p class="mt-sm">{searchView.status}</p>
+                    <p class="mt-sm">No Search Results</p>
                     {#if connected}<p class="mt-xs text-xs">Browse the tree to add more Address Space metadata to Search.</p>{/if}
                   </div>
                 </div>
@@ -1121,6 +1140,7 @@
               {/if}
             </div>
           </div>
+          {/if}
 
           <div class="panel flex min-h-0 flex-col overflow-hidden">
             <div class="flex items-center justify-between gap-md border-b border-outline-variant p-md">
@@ -1193,15 +1213,15 @@
                 {#if inspection.outOfRange}<div class="mt-md rounded border border-tertiary-container bg-tertiary-container/10 p-md text-tertiary">Out-of-Range: {inspection.outOfRange}</div>{/if}
                 {#if inspection.error}<div class="mt-md rounded border border-error-container bg-error-container/20 p-md text-error">{inspection.error}</div>{/if}
                 <div class="mt-lg grid gap-md lg:grid-cols-2">
-                  <div class="space-y-sm">
+                  <div class="min-w-0 space-y-sm">
                     <p class="label">Metadata</p>
                     <dl class="space-y-xs text-sm">
-                      <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">NodeId</dt><dd class="font-mono">{inspection.node.NodeID}</dd></div>
-                      <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">BrowseName</dt><dd class="font-mono">{inspection.node.BrowseName}</dd></div>
-                      <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Data Type</dt><dd>{inspection.details?.DataType || '—'}</dd></div>
-                      <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">AccessLevel</dt><dd>{inspection.details?.AccessLevel || '—'}</dd></div>
-                      <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">UserAccessLevel</dt><dd>{inspection.details?.UserAccessLevelAvailable ? inspection.details.UserAccessLevel : '—'}</dd></div>
-                      <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Engineering Unit</dt><dd>{inspection.details?.EngineeringUnit || '—'}</dd></div>
+                      <div class="flex items-start justify-between gap-md"><dt class="shrink-0 text-on-surface-variant">NodeId</dt><dd class="min-w-0 break-all text-right font-mono">{inspection.node.NodeID}</dd></div>
+                      <div class="flex items-start justify-between gap-md"><dt class="shrink-0 text-on-surface-variant">BrowseName</dt><dd class="min-w-0 break-all text-right font-mono">{inspection.node.BrowseName}</dd></div>
+                      <div class="flex items-start justify-between gap-md"><dt class="shrink-0 text-on-surface-variant">Data Type</dt><dd class="min-w-0 break-words text-right">{inspection.details?.DataType || '—'}</dd></div>
+                      <div class="flex items-start justify-between gap-md"><dt class="shrink-0 text-on-surface-variant">AccessLevel</dt><dd class="min-w-0 break-words text-right">{inspection.details?.AccessLevel || '—'}</dd></div>
+                      <div class="flex items-start justify-between gap-md"><dt class="shrink-0 text-on-surface-variant">UserAccessLevel</dt><dd class="min-w-0 break-words text-right">{inspection.details?.UserAccessLevelAvailable ? inspection.details.UserAccessLevel : '—'}</dd></div>
+                      <div class="flex items-start justify-between gap-md"><dt class="shrink-0 text-on-surface-variant">Engineering Unit</dt><dd class="min-w-0 break-words text-right">{inspection.details?.EngineeringUnit || '—'}</dd></div>
                     </dl>
                   </div>
                   <div class="space-y-sm">
@@ -1213,8 +1233,10 @@
                     </dl>
                   </div>
                 </div>
+              {:else if selectedNodeID}
+                <div class="flex h-full items-center justify-center p-lg text-center text-on-surface-variant">Object Nodes do not provide Variable Node Inspection or Method Call details.</div>
               {:else}
-                <div class="flex h-full items-center justify-center text-center text-on-surface-variant">Select a Variable Node or Method Node from the Address Space to inspect it.</div>
+                <div class="flex h-full items-center justify-center p-lg text-center text-on-surface-variant">Select a Variable Node or Method Node to inspect it.</div>
               {/if}
             </div>
           </div>

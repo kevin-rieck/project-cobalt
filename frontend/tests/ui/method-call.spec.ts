@@ -50,7 +50,10 @@ async function stubMethodAPI(page: Page, options: { details?: unknown; detailsEr
 async function openMethod(page: Page, source: 'tree' | 'search' = 'tree', state = 'method-call') {
   await page.goto(`/?screenshot=${state}`)
   if (source === 'tree') await page.getByRole('button', { name: 'MethodIO Method', exact: true }).click()
-  else await page.getByRole('button', { name: /^play_circle MethodIO/ }).click()
+  else {
+    await page.getByRole('button', { name: 'Search', exact: true }).click()
+    await page.getByRole('button', { name: /^play_circle MethodIO/ }).click()
+  }
   await expect(page.getByRole('heading', { name: 'MethodIO', level: 2 })).toBeVisible()
 }
 

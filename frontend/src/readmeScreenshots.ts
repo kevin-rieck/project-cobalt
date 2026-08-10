@@ -1,4 +1,4 @@
-type Tab = 'connections' | 'address-space' | 'watchlist' | 'session-trend' | 'logs'
+type Tab = 'connections' | 'address-space' | 'search' | 'watchlist' | 'session-trend' | 'logs'
 
 type AddressNode = {
   ParentNodeID?: string
@@ -142,6 +142,14 @@ const methodSearchResults = [{
   score: 100
 }]
 
+const objectSearchResults = [{
+  node: nodes.filler,
+  matchKind: 'DisplayName',
+  matchText: 'Filler Station',
+  source: 'Browsed Address Space metadata',
+  score: 100
+}]
+
 const sessionTrend = {
   nodes: [
     { node: nodes.temp, latestValue: '83.7 °C', status: 'Good', pointCount: 12 },
@@ -187,7 +195,9 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
 
   const tabByRequest: Record<string, Tab> = {
     hero: 'address-space',
-    search: 'address-space',
+    search: 'search',
+    'search-object': 'search',
+    'search-disconnected': 'search',
     inspection: 'address-space',
     watchlist: 'watchlist',
     trend: 'session-trend',
@@ -201,25 +211,32 @@ export function getReadmeScreenshotState(): ReadmeScreenshotState | null {
       { id: 'control-gateway', name: 'Control Gateway', endpoint: 'opc.tcp://192.168.10.42:4840', securityPolicy: 'Basic256Sha256', securityMode: 'SignAndEncrypt', authType: 'Anonymous', serverCertificateThumbprint: '8A:91:4F:2C:67:12:EB:44', createdAt: now, updatedAt: now, lastConnectedAt: now }
     ]
 
+  const disconnectedSearch = requested === 'search-disconnected'
+  const objectSearch = requested === 'search-object'
+
   return {
     activeTab: tabByRequest[requested] || 'address-space',
-    connected: true,
+    connected: !disconnectedSearch,
     readOnlyMode: requested === 'method-call-read-only' || (!requested.startsWith('write-') && !requested.startsWith('method-call')) || requested === 'write-read-only',
-    currentConnection: 'Control Gateway',
+    currentConnection: disconnectedSearch ? '' : 'Control Gateway',
     tree,
-    selectedNodeID: requested.startsWith('method-call') ? nodes.methodIO.NodeID : nodes.temp.NodeID,
+    selectedNodeID: disconnectedSearch ? '' : objectSearch ? nodes.filler.NodeID : requested.startsWith('method-call') ? nodes.methodIO.NodeID : nodes.temp.NodeID,
     selectedMethod: requested.startsWith('method-call') ? nodes.methodIO : null,
-    inspection: requested.startsWith('method-call') ? null : inspectionForRequest(requested),
+    inspection: disconnectedSearch || objectSearch || requested.startsWith('method-call') ? null : inspectionForRequest(requested),
     confirmationInspectionUpdate: requested === 'write-confirmation-live-value-change' ? changedInspection : null,
     logs: [],
     receiveRuntimeEvents: requested === 'write-feedback-events' || requested === 'method-call-events',
     watchlist,
     sessionTrend,
     focusedTrendNodeID: nodes.temp.NodeID,
-    searchQuery: requested === 'connections' ? '' : requested.startsWith('method-call') ? 'method' : 'filler',
-    searchView: requested.startsWith('method-call')
-      ? { query: 'method', results: methodSearchResults as typeof searchResults, status: '1 Search Result found in browsed Address Space metadata.' }
-      : { query: 'filler', results: searchResults, status: '3 Search Results found in browsed Address Space metadata.' },
+    searchQuery: disconnectedSearch || requested === 'connections' ? '' : requested.startsWith('method-call') ? 'method' : 'filler',
+    searchView: disconnectedSearch
+      ? { query: '', results: [], status: 'Connect to an OPC UA Server to search browsed Address Space metadata.' }
+      : objectSearch
+        ? { query: 'filler', results: objectSearchResults as typeof searchResults, status: '1 Search Result found in browsed Address Space metadata.' }
+        : requested.startsWith('method-call')
+          ? { query: 'method', results: methodSearchResults as typeof searchResults, status: '1 Search Result found in browsed Address Space metadata.' }
+          : { query: 'filler', results: searchResults, status: '3 Search Results found in browsed Address Space metadata.' },
     savedConnections,
     endpoints: [
       { URL: 'opc.tcp://192.168.10.42:4840', SecurityPolicy: 'Basic256Sha256', SecurityMode: 'SignAndEncrypt', SecurityLevel: 3, UserTokenTypes: ['Anonymous', 'UserName'], ServerThumbprint: '8A:91:4F:2C:67:12:EB:44' },

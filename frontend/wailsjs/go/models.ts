@@ -116,11 +116,11 @@ export namespace main {
 	    objectNodeID: string;
 	    methodNodeID: string;
 	    inputArguments: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MethodCallRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.objectNodeID = source["objectNodeID"];
@@ -131,11 +131,11 @@ export namespace main {
 	export class MethodNodeRequest {
 	    objectNodeID: string;
 	    methodNodeID: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MethodNodeRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.objectNodeID = source["objectNodeID"];
@@ -322,7 +322,7 @@ export namespace opcua {
 	        this.SourceTimestamp = this.convertValues(source["SourceTimestamp"], null);
 	        this.ServerTimestamp = this.convertValues(source["ServerTimestamp"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -349,11 +349,11 @@ export namespace opcua {
 	    Description: string;
 	    ArrayDimensions: number[];
 	    Supported: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MethodArgument(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Name = source["Name"];
@@ -368,11 +368,11 @@ export namespace opcua {
 	export class MethodArgumentValue {
 	    DataType: string;
 	    Value: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MethodArgumentValue(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.DataType = source["DataType"];
@@ -383,18 +383,18 @@ export namespace opcua {
 	    StatusCode: string;
 	    InputArgumentResults: string[];
 	    OutputArguments: MethodArgumentValue[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MethodCallResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.StatusCode = source["StatusCode"];
 	        this.InputArgumentResults = source["InputArgumentResults"];
 	        this.OutputArguments = this.convertValues(source["OutputArguments"], MethodArgumentValue);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -421,11 +421,11 @@ export namespace opcua {
 	    UserExecutable: boolean;
 	    InputArguments: MethodArgument[];
 	    OutputArguments: MethodArgument[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MethodDetails(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ObjectNodeID = source["ObjectNodeID"];

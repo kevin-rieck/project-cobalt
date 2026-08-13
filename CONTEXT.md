@@ -103,3 +103,11 @@ _Avoid_: Dashboard, monitor, pinned nodes, Live Monitor, Live View
 **Session Trend**:
 A temporary view of Live Value updates observed for a Variable Node during the current Troubleshooting Session.
 _Avoid_: Historian, chart history, Trend Dashboard
+
+**Troubleshooting Session Recovery**:
+The deliberate continuation of a Troubleshooting Session after connectivity to its OPC UA Server is interrupted, preserving the Automation Engineer's investigative context without silently resuming mutating operations.
+_Avoid_: Automatic reconnect, session restart, connection retry
+
+**Diagnostic Report**:
+A sanitized, exportable record of OPC UA Studio operations and failures used to understand problems encountered during a Troubleshooting Session without exposing secrets.
+_Avoid_: Log dump, debug file, support bundle

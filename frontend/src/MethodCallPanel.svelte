@@ -103,8 +103,8 @@
     <div>
       <div class="flex flex-wrap items-center gap-sm">
         <span class="material-symbols-outlined text-primary">play_circle</span>
-        <span class="rounded bg-primary/10 px-sm py-xs text-sm font-semibold text-primary">Method Node</span>
-        <span class="rounded bg-surface-container-highest px-sm py-xs text-sm {details.Executable && details.UserExecutable ? 'text-emerald-400' : 'text-tertiary'}">{details.Executable && details.UserExecutable ? 'Executable for this session' : details.Executable ? 'Not executable for this session' : 'Not executable'}</span>
+        <span class="status-chip border-primary/40 text-primary">Method Node</span>
+        <span class="status-chip {details.Executable && details.UserExecutable ? 'border-emerald-400/40 text-emerald-400' : 'border-tertiary-container/50 text-tertiary'}">{details.Executable && details.UserExecutable ? 'Executable for this session' : details.Executable ? 'Not executable for this session' : 'Not executable'}</span>
       </div>
       <p class="mt-md text-on-surface-variant">{details.Description || 'No description provided.'}</p>
     </div>

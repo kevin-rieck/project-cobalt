@@ -202,6 +202,10 @@
   let writeConfirmOpen = false
   let writeConfirmationSnapshot: WriteConfirmationSnapshot | null = null
   let selectedMethod: AddressNode | null = (readmeScreenshotState?.selectedMethod as AddressNode) ?? null
+  let connectionModalOpen = activeTab === 'connections'
+  let endpointInput: HTMLInputElement | null = null
+  let connectionModal: HTMLDivElement | null = null
+  let connectionModalOpener: HTMLElement | null = null
 
   $: selectedEndpointInfo = endpoints[selectedEndpoint]
   $: selectedSecurityMode = selectedEndpointInfo?.SecurityMode?.replace('MessageSecurityMode', '').trim() || ''
@@ -221,6 +225,7 @@
 
   onMount(() => {
     let disposed = false
+    if (connectionModalOpen) void tick().then(() => endpointInput?.focus())
     let eventUnsubscribers: Array<() => void> = []
 
     async function initialize() {
@@ -281,6 +286,7 @@
   }
 
   async function discover() {
+    if (discovering) return
     discovering = true
     connectionError = ''
     endpoints = []
@@ -358,6 +364,7 @@
       focusedTrendNodeID = ''
       resetSearchView()
       activeTab = 'address-space'
+      closeConnectionModal(true)
       if (saveConnectionError) {
         connectionError = saveConnectionError
         addToast('error', `Connected, but saving the Saved Connection failed: ${saveConnectionError}`)
@@ -459,7 +466,8 @@
       sessionTrend = { nodes: [], points: [] }
       focusedTrendNodeID = ''
       resetSearchView()
-      activeTab = 'connections'
+      activeTab = 'address-space'
+      connectionModalOpen = true
       addToast('info', 'Disconnected')
     } catch (error) {
       addToast('error', String(error))
@@ -843,29 +851,68 @@
     { good: 0, bad: 0, uncertain: 0, stale: 0, outOfRange: 0 }
   )
 
+  function openConnectionModal() {
+    if (!connectionModalOpen && document.activeElement instanceof HTMLElement) connectionModalOpener = document.activeElement
+    connectionError = ''
+    connectionModalOpen = true
+    void tick().then(() => endpointInput?.focus())
+  }
+
+  function closeConnectionModal(force = false) {
+    if (!force && (connecting || savingConnection)) return
+    const opener = connectionModalOpener
+    connectionModalOpener = null
+    connectionModalOpen = false
+    if (activeTab === 'connections') activeTab = 'address-space'
+    void tick().then(() => opener?.focus())
+  }
+
+  function handleConnectionModalKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      closeConnectionModal()
+      return
+    }
+    if (event.key !== 'Tab' || !connectionModal) return
+    const focusable = Array.from(connectionModal.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')).filter(element => element.getClientRects().length > 0)
+    if (focusable.length === 0) {
+      event.preventDefault()
+      return
+    }
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
   function navButtonClass(active: boolean) {
     return active
-      ? 'flex w-full items-center gap-md rounded border-l-2 px-md py-sm text-left transition-colors bg-primary-container text-background border-primary-container font-bold'
-      : 'flex w-full items-center gap-md rounded border-l-2 px-md py-sm text-left transition-colors text-on-surface-variant border-transparent hover:bg-surface-container-highest'
+      ? 'flex w-full items-center gap-md rounded border-l-2 px-md py-sm text-left text-sm transition-colors bg-primary-container text-on-primary border-primary-container font-bold shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]'
+      : 'flex w-full items-center gap-md rounded border-l-2 px-md py-sm text-left text-sm transition-colors text-on-surface-variant border-transparent hover:bg-surface-container-high hover:text-on-surface'
   }
 </script>
 
 <div class="flex h-screen overflow-hidden bg-background text-on-background">
-  <aside class="flex h-screen w-sidebar-width shrink-0 flex-col border-r border-outline-variant bg-surface-container py-md">
+  <aside class="flex h-screen w-sidebar-width shrink-0 flex-col border-r border-outline-variant bg-surface-container-lowest py-lg">
     <div class="border-b border-outline-variant px-lg pb-lg">
       <div class="flex items-center gap-sm">
-        <div class="flex h-8 w-8 items-center justify-center rounded border border-outline-variant bg-surface-container-highest">
-          <span class="material-symbols-outlined text-primary">dns</span>
+        <div class="flex h-8 w-8 items-center justify-center rounded border border-primary/50 bg-primary-container text-on-primary shadow-[0_0_18px_rgba(57,193,244,0.14)]">
+          <span class="material-symbols-outlined text-[20px]">memory</span>
         </div>
         <div class="min-w-0">
-          <h1 class="truncate text-xl font-black tracking-tight text-secondary">OPC UA Studio</h1>
-          <p class="flex items-center gap-xs truncate text-sm text-on-surface-variant"><span class="h-2 w-2 rounded-full {connected ? 'bg-emerald-400' : 'bg-outline'}"></span>{connected ? currentConnection : 'Disconnected'}</p>
+          <h1 class="truncate text-base font-bold tracking-tight text-on-surface">OPC UA Studio</h1>
+          <p class="mt-0.5 truncate text-[10px] font-semibold uppercase tracking-[0.1em] text-on-surface-variant">Industrial OPC UA client</p>
         </div>
       </div>
+      <p class="mt-lg flex items-center gap-xs truncate font-mono text-[11px] text-on-surface-variant"><span class="h-1.5 w-1.5 rounded-full {connected ? 'bg-emerald-400 shadow-[0_0_8px_rgba(74,222,128,0.55)]' : 'bg-outline'}"></span>{connected ? currentConnection : 'Disconnected'}</p>
     </div>
 
     <nav class="flex-1 space-y-xs overflow-y-auto px-md py-md">
-      <button class={navButtonClass(activeTab === 'connections')} on:click={() => (activeTab = 'connections')}>
+      <button class={navButtonClass(connectionModalOpen)} on:click={openConnectionModal}>
         <span class="material-symbols-outlined">settings_input_component</span><span class="label text-current">Connection Manager</span>
       </button>
       <button class={navButtonClass(activeTab === 'address-space')} on:click={() => (activeTab = 'address-space')}>
@@ -890,168 +937,43 @@
   </aside>
 
   <div class="flex min-w-0 flex-1 flex-col">
-    <header class="flex h-12 shrink-0 items-center justify-between border-b border-outline-variant bg-surface px-md">
-      <div class="flex items-center gap-lg">
-        <span class="text-xl font-bold tracking-tight text-primary">OPC UA Studio</span>
-        <div class="hidden w-72 items-center rounded border border-outline-variant bg-surface-container px-sm py-xs md:flex">
-          <span class="material-symbols-outlined mr-sm text-[18px] text-on-surface-variant">search</span>
-          <input aria-label="Search Address Space from header" class="w-full bg-transparent text-sm outline-none placeholder:text-on-surface-variant" placeholder="Search Address Space..." bind:value={searchQuery} disabled={!connected} on:input={queueAddressSpaceSearch} on:focus={() => (activeTab = 'search')} />
-        </div>
+    <header class="flex h-16 shrink-0 items-center justify-between border-b border-outline-variant bg-surface px-lg">
+      <div class="hidden w-[28rem] max-w-[46vw] items-center border border-outline-variant bg-surface-container-lowest px-md py-sm md:flex">
+        <span class="material-symbols-outlined mr-sm text-[18px] text-on-surface-variant">search</span>
+        <input aria-label="Search Address Space from header" class="w-full bg-transparent text-sm outline-none placeholder:text-on-surface-variant" placeholder="Search Address Space..." bind:value={searchQuery} disabled={!connected} on:input={queueAddressSpaceSearch} on:focus={() => (activeTab = 'search')} />
       </div>
-      <div class="flex items-center gap-sm">
+      <div class="ml-auto flex items-center gap-sm">
         {#if connected}
-          <span class="rounded border border-outline-variant px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Changes Allowed'}</span>
-          {#if readOnlyMode}
-            <button class="btn-secondary" on:click={() => setReadOnlyMode(false)}>Allow changes this session</button>
-          {:else}
-            <button class="btn-secondary" on:click={() => setReadOnlyMode(true)}>Read-Only Mode</button>
-          {/if}
+          <div class="flex items-center gap-sm border border-outline-variant bg-surface-container-low px-sm py-xs">
+            <span class="material-symbols-outlined text-[16px] text-primary">verified_user</span>
+            <span class="text-xs font-semibold text-on-surface-variant">{readOnlyMode ? 'Read-Only Mode' : 'Changes Allowed'}</span>
+            {#if readOnlyMode}
+              <button class="rounded bg-primary-container px-sm py-xs text-[11px] font-bold text-on-primary transition-colors hover:bg-primary" on:click={() => setReadOnlyMode(false)}>Allow changes this session</button>
+            {:else}
+              <button class="rounded bg-tertiary-container px-sm py-xs text-[11px] font-bold text-on-primary" on:click={() => setReadOnlyMode(true)}>Lock Changes</button>
+            {/if}
+          </div>
           <button class="btn-secondary" on:click={disconnect}>Disconnect</button>
         {:else}
-          <button class="btn-primary" on:click={() => (activeTab = 'connections')}>Connect</button>
+          <button class="btn-primary" on:click={openConnectionModal}>Connect</button>
         {/if}
       </div>
     </header>
 
-    <main class="min-h-0 flex-1 overflow-auto bg-background p-margin-desktop">
+    <main class="min-h-0 flex-1 overflow-auto bg-background p-[clamp(20px,3vw,32px)]">
       {#if activeTab === 'connections'}
-        <section class="mx-auto max-w-5xl space-y-lg">
-          <div>
-            <p class="label">Connection Manager</p>
-            <h2 class="mt-xs text-3xl font-semibold">Connect to an OPC UA Server</h2>
-            <p class="mt-sm text-on-surface-variant">Create a Saved Connection from non-secret details, then reconnect from it after restarting OPC UA Studio.</p>
+        <section class="mx-auto flex min-h-[420px] max-w-[720px] items-center justify-center">
+          <div class="panel max-w-xl p-xl text-center">
+            <span class="material-symbols-outlined text-4xl text-primary">settings_input_component</span>
+            <h2 class="mt-md text-2xl font-semibold text-on-surface">Connection Manager</h2>
+            <p class="mt-sm text-on-surface-variant">Open the Connection Manager to discover endpoints, choose security settings, and start a Troubleshooting Session.</p>
+            <button class="btn-primary mt-lg" on:click={openConnectionModal}>Open Connection Manager</button>
           </div>
-
-          <div class="panel overflow-hidden">
-            <div class="flex items-center justify-between border-b border-outline-variant p-md">
-              <div><p class="label">Saved Connections</p><h3 class="text-xl font-semibold">Reconnect details</h3></div>
-              <span class="rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-on-surface-variant">{savedConnections.length}</span>
-            </div>
-            {#if savedConnections.length === 0}
-              <div class="space-y-md p-lg text-on-surface-variant">
-                <p>No Saved Connections yet.</p>
-                <p>Use the connection form below and check Save as Saved Connection before connecting.</p>
-                <p>Leave it unchecked to make a manual one-off connection without saving.</p>
-              </div>
-            {:else}
-              <div class="divide-y divide-outline-variant">
-                {#each savedConnections as saved (saved.id)}
-                  <div role="button" tabindex="0" class="block w-full cursor-pointer p-md text-left transition-colors hover:bg-surface-container-high" on:click={() => useSavedConnection(saved)} on:keydown={(event) => event.key === 'Enter' && useSavedConnection(saved)}>
-                    <div class="flex items-center justify-between gap-md">
-                      <span class="font-semibold text-on-surface">{saved.name}</span>
-                      <span class="rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-primary">{saved.authType}</span>
-                    </div>
-                    <p class="mt-xs truncate font-mono text-sm text-on-surface-variant">{saved.endpoint}</p>
-                    <p class="mt-xs truncate text-xs text-on-surface-variant">{saved.securityPolicy || 'None'} / {saved.securityMode || 'None'}{saved.username ? ` • ${saved.username}` : ''}</p>
-                    {#if saved.serverCertificateThumbprint}<p class="mt-xs truncate font-mono text-xs text-on-surface-variant">Server certificate thumbprint: {saved.serverCertificateThumbprint}</p>{/if}
-                    <div class="mt-xs flex items-center justify-between gap-md text-xs text-on-surface-variant">
-                      <span>{formatSavedConnectionTime(saved.lastConnectedAt)}</span>
-                      <button class="rounded p-xs text-error hover:bg-error-container/20" disabled={deletingSavedConnectionID === saved.id} on:click={(event) => deleteSavedConnection(saved, event)} title="Delete Saved Connection"><span class="material-symbols-outlined text-[18px]">delete</span></button>
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-
-          <div class="panel p-lg">
-            <div class="grid gap-md lg:grid-cols-[1fr_auto]">
-              <label class="space-y-xs">
-                <span class="label">Endpoint</span>
-                <input class="field w-full" bind:value={endpointText} placeholder="opc.tcp://host:4840" />
-              </label>
-              <div class="flex items-end">
-                <button class="btn-primary h-9" on:click={discover} disabled={discovering}>{discovering ? 'Discovering…' : 'Discover Endpoints'}</button>
-              </div>
-            </div>
-            {#if connectionError}
-              <div class="mt-md rounded border border-error-container bg-error-container/20 p-md text-sm text-error">{connectionError}</div>
-            {/if}
-          </div>
-
-          {#if endpoints.length > 0}
-            <div class="grid gap-lg lg:grid-cols-[1.2fr_0.8fr]">
-              <div class="panel overflow-hidden">
-                <div class="border-b border-outline-variant p-md"><span class="label">Advertised Endpoints</span></div>
-                <div class="max-h-96 overflow-auto">
-                  {#each endpoints as endpoint, index}
-                    <button class="block w-full border-b border-outline-variant p-md text-left transition-colors hover:bg-surface-container-high {selectedEndpoint === index ? 'bg-secondary-container/60' : ''}" on:click={() => (selectedEndpoint = index)}>
-                      <div class="flex items-center justify-between gap-md">
-                        <span class="font-mono text-sm text-on-surface">{endpoint.SecurityPolicy} / {endpoint.SecurityMode}</span>
-                        <span class="rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-primary">L{endpoint.SecurityLevel}</span>
-                      </div>
-                      <p class="mt-xs truncate text-sm text-on-surface-variant">{endpoint.URL}</p>
-                      <p class="mt-xs text-xs text-on-surface-variant">Auth: {endpoint.UserTokenTypes.join(', ') || 'Unknown'}</p>
-                      {#if endpoint.ServerThumbprint}<p class="mt-xs truncate font-mono text-xs text-on-surface-variant">Server certificate thumbprint: {endpoint.ServerThumbprint}</p>{/if}
-                    </button>
-                  {/each}
-                </div>
-              </div>
-
-              <div class="panel space-y-md p-lg">
-                <div>
-                  <span class="label">Authentication</span>
-                  <div class="mt-sm grid grid-cols-2 gap-sm">
-                    <button class="btn-secondary {authType === 'Anonymous' ? 'bg-secondary-container text-on-secondary-container' : ''}" on:click={() => (authType = 'Anonymous')}>Anonymous</button>
-                    <button class="btn-secondary {authType === 'UserName' ? 'bg-secondary-container text-on-secondary-container' : ''}" disabled={!canUseUsername} on:click={() => (authType = 'UserName')}>Username</button>
-                  </div>
-                </div>
-                {#if authType === 'UserName'}
-                  <label class="block space-y-xs"><span class="label">Username</span><input class="field w-full" bind:value={username} /></label>
-                  <label class="block space-y-xs"><span class="label">Password</span><input class="field w-full" type="password" bind:value={password} /></label>
-                {/if}
-                {#if selectedEndpointIsSecure}
-                  <div class="space-y-sm rounded border border-outline-variant bg-surface-container-low p-md">
-                    <p class="label">Client Certificate</p>
-                    <p class="text-sm text-on-surface-variant">Secure endpoints require a PEM/CRT client certificate and PEM/KEY private key.</p>
-                    <label class="block space-y-xs">
-                      <span class="label">Certificate Path</span>
-                      <div class="flex gap-sm">
-                        <input class="field min-w-0 flex-1" bind:value={clientCertificatePath} placeholder="C:\\certs\\client.crt" />
-                        <button class="btn-secondary shrink-0" on:click={pickClientCertificate}>Browse…</button>
-                      </div>
-                    </label>
-                    <label class="block space-y-xs">
-                      <span class="label">Private Key Path</span>
-                      <div class="flex gap-sm">
-                        <input class="field min-w-0 flex-1" bind:value={clientPrivateKeyPath} placeholder="C:\\certs\\client.key" />
-                        <button class="btn-secondary shrink-0" on:click={pickClientPrivateKey}>Browse…</button>
-                      </div>
-                    </label>
-                  </div>
-                {/if}
-                <label class="flex items-start gap-sm rounded border border-outline-variant bg-surface-container-low p-md text-sm text-on-surface">
-                  <input class="mt-1" type="checkbox" bind:checked={saveConnectionOnConnect} />
-                  <span>
-                    <span class="font-medium">{saveConnectionLabel}</span>
-                    <span class="mt-xs block text-on-surface-variant">Leave unchecked for a manual one-off connection.</span>
-                  </span>
-                </label>
-                {#if saveConnectionOnConnect}
-                  <label class="block space-y-xs">
-                    <span class="label">Saved Connection Name</span>
-                    <input class="field w-full" bind:value={connectionName} placeholder="Control Gateway" />
-                    {#if editingSavedConnectionName}<span class="text-xs text-on-surface-variant">Updating {editingSavedConnectionName}</span>{/if}
-                  </label>
-                {/if}
-                <button class="btn-primary w-full" on:click={connect} disabled={!canConnect}>{connecting ? 'Connecting…' : savingConnection ? 'Saving…' : 'Connect'}</button>
-                {#if savingRequiresName}
-                  <p class="text-sm text-tertiary">Enter a Saved Connection name to save these reconnect details.</p>
-                {:else if passwordRequired && !password}
-                  <p class="text-sm text-tertiary">Enter the password for this Saved Connection before connecting. Passwords are never saved.</p>
-                {:else if selectedEndpointIsSecure && (!clientCertificatePath || !clientPrivateKeyPath)}
-                  <p class="text-sm text-tertiary">Provide a client certificate and private key to connect to this secure endpoint.</p>
-                {:else}
-                  <p class="text-sm text-on-surface-variant">Client Certificate authentication and issued tokens are intentionally deferred in this slice.</p>
-                {/if}
-              </div>
-            </div>
-          {/if}
         </section>
       {:else if activeTab === 'address-space' || activeTab === 'search'}
         <section class={activeTab === 'address-space'
           ? 'grid h-full min-h-[600px] gap-lg xl:grid-cols-[360px_minmax(0,1fr)]'
-          : 'grid h-full min-h-[600px] gap-lg xl:grid-cols-[minmax(420px,0.9fr)_minmax(480px,1.1fr)]'}>
+          : 'grid h-full min-h-[600px] gap-0 -mx-[clamp(20px,3vw,32px)] -my-[clamp(20px,3vw,32px)] xl:grid-cols-[minmax(560px,1fr)_minmax(560px,1fr)]'}>
           {#if activeTab === 'address-space'}
           <div class="panel flex min-h-0 flex-col overflow-hidden">
             <div class="flex items-center justify-between border-b border-outline-variant p-md">
@@ -1082,25 +1004,35 @@
           </div>
 
           {:else}
-          <div class="panel flex min-h-0 flex-col overflow-hidden">
-            <div class="border-b border-outline-variant p-md">
-              <p class="label">Search</p>
-              <h2 class="text-xl font-semibold">Address Space Search</h2>
-              <p class="mt-xs text-sm text-on-surface-variant">Search browsed metadata: DisplayName, BrowseName, NodeID, and NodeClass.</p>
-              <div class="relative mt-md">
-                <span class="material-symbols-outlined absolute left-md top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
-                <input bind:this={searchInput} aria-label="Search Address Space" class="field w-full py-md pl-[48px] text-base" placeholder="Search Address Space…" bind:value={searchQuery} disabled={!connected} on:input={queueAddressSpaceSearch} />
+          <div class="search-results-pane min-h-0 overflow-auto border-r border-outline-variant bg-background px-lg py-xl xl:px-xl">
+            <div class="mx-auto max-w-[528px]">
+              <div>
+                <p class="label">Address Space Explorer</p>
+                <h2 aria-label="Address Space Search" class="mt-xs text-2xl font-semibold text-on-surface">Node Search &amp; Inspection</h2>
+                <p class="mt-sm max-w-xl text-sm leading-relaxed text-on-surface-variant">Search browsed metadata: DisplayName, BrowseName, NodeID, and NodeClass.</p>
               </div>
-            </div>
-            <div class="min-h-0 flex-1 overflow-auto p-md">
-              <div role="status" aria-live="polite">
+
+              <div class="relative mt-xl">
+                <span class="material-symbols-outlined absolute left-md top-1/2 -translate-y-1/2 text-[19px] text-on-surface-variant">search</span>
+                <input bind:this={searchInput} aria-label="Search Address Space" class="field h-11 w-full pl-[48px] text-sm" placeholder="Search Address Space…" bind:value={searchQuery} disabled={!connected} on:input={queueAddressSpaceSearch} />
+              </div>
+
+              <div class="mt-lg border-b border-outline pb-md">
+                <div class="flex items-center justify-between gap-md">
+                  <p class="font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-on-surface-variant">Found {searchView.results.length} results for &quot;{searchQuery.toUpperCase()}&quot;</p>
+                  <button class="hidden shrink-0 items-center gap-xs text-[10px] font-bold uppercase tracking-wide text-on-surface-variant transition-colors hover:text-primary sm:flex" title="Sort search results by relevance">Sort by relevance <span class="material-symbols-outlined text-[15px]">expand_more</span></button>
+                </div>
+              </div>
+
+              <div role="status" aria-live="polite" class="pt-sm">
                 {#if searching}
-                  <div class="mb-md text-sm text-primary">Searching…</div>
+                  <div class="text-xs text-primary">Searching…</div>
                 {/if}
-                <p class="mb-md text-sm text-on-surface-variant">{searchView.status}</p>
+                <p class="text-[10px] text-on-surface-variant">{searchView.status}</p>
               </div>
+
               {#if searchView.results.length === 0}
-                <div class="flex min-h-[260px] items-center justify-center rounded border border-dashed border-outline-variant bg-surface-container-low p-lg text-center text-on-surface-variant">
+                <div class="empty-state mt-md">
                   <div>
                     <span class="material-symbols-outlined text-3xl text-primary">manage_search</span>
                     <p class="mt-sm">No Search Results</p>
@@ -1108,31 +1040,34 @@
                   </div>
                 </div>
               {:else}
-                <div class="space-y-md">
+                <div class="mt-md space-y-md">
                   {#each searchView.results as result (nodeSelectionKey(result.node))}
-                    <div role="button" tabindex="0" class="group relative block w-full cursor-pointer overflow-hidden rounded-lg border border-outline-variant bg-surface-container p-md text-left transition-colors hover:border-primary/70 {selectedNodeID === nodeSelectionKey(result.node) ? 'border-primary bg-secondary-container/40' : ''}" on:click={() => activateSearchResult(result)} on:keydown={(event) => event.key === 'Enter' && activateSearchResult(result)}>
-                      <div class="absolute left-0 top-0 bottom-0 w-[2px] bg-primary {selectedNodeID === nodeSelectionKey(result.node) ? 'scale-y-100' : 'scale-y-0 group-hover:scale-y-100'} origin-top transition-transform"></div>
+                    <div role="button" tabindex="0" class="search-result-card group relative block w-full cursor-pointer overflow-hidden border-l-2 border-transparent bg-surface-container-low p-md text-left transition-colors hover:bg-surface-container {selectedNodeID === nodeSelectionKey(result.node) ? 'selected' : ''}" on:click={() => activateSearchResult(result)} on:keydown={(event) => event.key === 'Enter' && activateSearchResult(result)}>
                       <div class="flex items-start justify-between gap-md">
                         <div class="flex min-w-0 gap-sm">
-                          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-outline-variant bg-surface-container-high text-primary">
-                            <span class="material-symbols-outlined">{nodeIcon(result.node.NodeClass)}</span>
+                          <div class="flex h-8 w-8 shrink-0 items-center justify-center bg-surface-container-high text-primary">
+                            <span class="material-symbols-outlined text-[18px]">{nodeIcon(result.node.NodeClass)}</span>
                           </div>
                           <div class="min-w-0">
-                            <h3 class="truncate text-lg font-semibold text-on-surface">{result.node.DisplayName}</h3>
-                            <p class="mt-xs truncate font-mono text-xs text-on-surface-variant">{result.node.NodeID}</p>
+                            <h3 class="truncate text-sm font-semibold text-on-surface">{result.node.DisplayName}</h3>
+                            <p class="mt-xs truncate font-mono text-[10px] text-on-surface-variant">{result.node.NodeID}</p>
                           </div>
                         </div>
-                        <span class="rounded bg-surface-container-highest px-sm py-xs font-mono text-xs text-primary">{result.node.NodeClass}</span>
-                      </div>
-                      <div class="mt-md grid gap-sm text-xs lg:grid-cols-2">
-                        <div class="rounded border border-outline-variant/60 bg-surface p-sm"><span class="label block">BrowseName</span><span class="font-mono text-on-surface">{result.node.BrowseName || '—'}</span></div>
-                        <div class="rounded border border-outline-variant/60 bg-surface p-sm"><span class="label block">Match</span><span class="font-mono text-on-surface">{result.matchKind}: {result.matchText}</span></div>
-                      </div>
-                      <div class="mt-md flex items-center justify-between gap-sm">
-                        <span class="rounded bg-surface-container-high px-sm py-xs font-mono text-[10px] text-on-surface-variant">{result.source}</span>
                         {#if result.node.NodeClass === 'Variable'}
-                          <button class="btn-primary shrink-0 px-sm py-xs text-xs" disabled={isWatched(result.node.NodeID)} on:click={(event) => addResultToWatchlist(result, event)}>{isWatched(result.node.NodeID) ? 'In Watchlist' : 'Add to Watchlist'}</button>
+                          <span class="status-chip shrink-0 {isWatched(result.node.NodeID) ? 'border-primary/20 bg-[#063347] text-primary-fixed-dim' : 'border-outline text-on-surface'}">{isWatched(result.node.NodeID) ? 'In Watchlist' : 'Available'}</span>
+                        {:else}
+                          <span class="status-chip shrink-0 text-primary">{result.node.NodeClass}</span>
                         {/if}
+                      </div>
+                      <div class="mt-md grid gap-md text-[10px] sm:grid-cols-2">
+                        <div class="min-w-0">
+                          <span class="label block !text-[9px] !tracking-[0.08em]">Browse Name</span>
+                          <span class="mt-xs block truncate font-mono text-xs text-on-surface">{result.node.BrowseName || '—'}</span>
+                        </div>
+                        <div class="min-w-0">
+                          <span class="label block !text-[9px] !tracking-[0.08em]">Match Type</span>
+                          <span class="mt-xs block truncate font-mono text-xs text-on-surface">{result.matchKind} / {result.matchKind === 'DisplayName' ? 'BrowseName' : 'DisplayName'}</span>
+                        </div>
                       </div>
                     </div>
                   {/each}
@@ -1142,21 +1077,37 @@
           </div>
           {/if}
 
-          <div class="panel flex min-h-0 flex-col overflow-hidden">
-            <div class="flex items-center justify-between gap-md border-b border-outline-variant p-md">
-              <div class="min-w-0"><p class="label">{selectedMethod ? 'Method Call' : 'Variable Node Inspection'}</p><h2 class="truncate text-xl font-semibold">{selectedMethod?.DisplayName ?? inspection?.node?.DisplayName ?? 'No node selected'}</h2></div>
+          <div class={activeTab === 'search' ? 'search-inspection-pane min-h-0 overflow-auto bg-background px-lg py-xl xl:px-xl' : 'panel flex min-h-0 flex-col overflow-hidden'}>
+            <div class={activeTab === 'search' ? 'search-inspection-header flex items-start justify-between gap-md' : 'flex items-center justify-between gap-md border-b border-outline-variant p-md'}>
+              {#if activeTab === 'search'}
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-md">
+                    <span class="status-chip border-primary/30 bg-surface-container-low text-primary">{selectedMethod ? 'Method Node' : 'Variable Node'}</span>
+                    <span class="label text-on-surface-variant">Live Connection</span>
+                  </div>
+                  <h2 class="mt-sm truncate text-2xl font-semibold text-on-surface">{selectedMethod?.DisplayName ?? inspection?.node?.DisplayName ?? 'No node selected'}</h2>
+                  {#if inspection}<p class="mt-xs truncate font-mono text-xs text-on-surface-variant">{inspection.node.NodeID}</p>{/if}
+                </div>
+              {:else}
+                <div class="min-w-0"><p class="label">{selectedMethod ? 'Method Call' : 'Variable Node Inspection'}</p><h2 class="truncate text-xl font-semibold">{selectedMethod?.DisplayName ?? inspection?.node?.DisplayName ?? 'No node selected'}</h2></div>
+              {/if}
               {#if inspection}
                 <div class="flex shrink-0 items-center gap-sm">
-                  <button class="btn-secondary" on:click={refreshInspectionValue} disabled={refreshingNodeID === inspection.node.NodeID}>{refreshingNodeID === inspection.node.NodeID ? 'Refreshing…' : 'Refresh current value'}</button>
-                  {#if inspection.watched}
-                    <button class="btn-secondary" on:click={() => removeFromWatchlist(inspection?.node.NodeID || '')}>Remove from Watchlist</button>
+                  {#if activeTab === 'search'}
+                    <button class="btn-secondary icon-label" on:click={refreshInspectionValue} disabled={refreshingNodeID === inspection.node.NodeID}><span class="material-symbols-outlined text-[17px]">refresh</span>{refreshingNodeID === inspection.node.NodeID ? 'Refreshing…' : 'Refresh'}</button>
+                    <button class="btn-secondary icon-label" on:click={() => removeFromWatchlist(inspection?.node.NodeID || '')}><span class="material-symbols-outlined text-[17px]">delete_outline</span>Drop</button>
                   {:else}
-                    <button class="btn-primary" on:click={addSelectedToWatchlist}>Add to Watchlist</button>
+                    <button class="btn-secondary" on:click={refreshInspectionValue} disabled={refreshingNodeID === inspection.node.NodeID}>{refreshingNodeID === inspection.node.NodeID ? 'Refreshing…' : 'Refresh current value'}</button>
+                    {#if inspection.watched}
+                      <button class="btn-secondary" on:click={() => removeFromWatchlist(inspection?.node.NodeID || '')}>Remove from Watchlist</button>
+                    {:else}
+                      <button class="btn-primary" on:click={addSelectedToWatchlist}>Add to Watchlist</button>
+                    {/if}
                   {/if}
                 </div>
               {/if}
             </div>
-            <div class="min-h-0 flex-1 overflow-auto p-lg">
+            <div class={activeTab === 'search' ? 'search-inspection-content' : 'min-h-0 flex-1 overflow-auto p-lg'}>
               {#if selectedMethod}
                 {#key nodeSelectionKey(selectedMethod)}
                   <MethodCallPanel
@@ -1170,34 +1121,54 @@
                 {/key}
               {:else if inspection}
                 <div class="grid gap-md lg:grid-cols-3">
-                  <div class="panel bg-surface-container-low p-md"><p class="label">Live Value</p><p class="mt-sm font-mono text-2xl text-primary">{inspection.value?.Value || '—'}</p></div>
-                  <div class="panel bg-surface-container-low p-md"><p class="label">Status</p><p class="mt-sm font-mono text-sm {inspection.stale ? 'text-tertiary' : 'text-emerald-400'}">{inspection.stale ? 'Stale' : inspection.value?.Status || 'Waiting'}</p></div>
-                  <div class="panel bg-surface-container-low p-md"><p class="label">Updates</p><p class="mt-sm font-mono text-2xl">{inspection.updateCount}</p></div>
+                  <div class={activeTab === 'search' ? 'search-metric-card' : 'panel bg-surface-container-low p-md'}><p class="label">Live Value</p><p class="mt-sm font-mono text-2xl text-primary">{inspection.value?.Value || '—'}{#if activeTab === 'search' && inspection.details?.EngineeringUnit}<span class="ml-xs text-base">{inspection.details.EngineeringUnit}</span>{/if}</p></div>
+                  <div class={activeTab === 'search' ? 'search-metric-card' : 'panel bg-surface-container-low p-md'}><p class="label">{activeTab === 'search' ? 'Signal Status' : 'Status'}</p><p class="mt-sm font-mono text-sm {inspection.stale ? 'text-tertiary' : 'text-emerald-400'}">{inspection.stale ? 'Stale' : inspection.value?.Status || 'Waiting'}</p></div>
+                  <div class={activeTab === 'search' ? 'search-metric-card' : 'panel bg-surface-container-low p-md'}><p class="label">{activeTab === 'search' ? 'Update Frequency' : 'Updates'}</p><p class="mt-sm font-mono text-2xl">{inspection.updateCount}{#if activeTab === 'search'}<span class="ml-xs text-base">ms</span>{/if}</p></div>
                 </div>
-                <div class="mt-md rounded border border-outline-variant bg-surface-container-low p-md">
-                  <p class="label">Effective Write Availability</p>
-                  <p class="mt-xs text-lg font-semibold {inspection.details?.Writable ? 'text-primary' : 'text-on-surface'}">{inspection.details?.WriteAvailability || 'Write availability not confirmed for this user'}</p>
-                </div>
-                <div class="mt-md rounded border border-outline-variant bg-surface-container-low p-md">
-                  <div class="flex items-start justify-between gap-md">
-                    <div>
-                      <p class="label">Variable Node Write</p>
-                      <h3 class="mt-xs text-lg font-semibold">Write value</h3>
-                      <p class="mt-xs text-sm text-on-surface-variant">Available only from Variable Node Inspection. Every write requires confirmation and cannot be submitted with Enter.</p>
+                {#if activeTab === 'search'}
+                  <div class="search-write-banner mt-lg">
+                    <div class="flex items-center gap-sm">
+                      <span class="flex h-8 w-8 items-center justify-center rounded-full bg-[#0b2b43] text-primary"><span class="material-symbols-outlined text-[18px]">edit</span></span>
+                      <div><h3 class="text-sm font-semibold text-on-surface">Writable Session</h3><p class="text-[10px] text-on-surface-variant">Direct data modification is permitted for this node.</p></div>
                     </div>
-                    <span class="rounded px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Changes Allowed'}</span>
+                    <span class="status-chip border-transparent bg-primary text-on-primary">{inspection.details?.Writable ? 'Read/Write' : 'Read Only'}</span>
                   </div>
-                  <div class="mt-md grid gap-sm lg:grid-cols-[1fr_auto]">
+                {:else}
+                  <div class="mt-md rounded border border-outline-variant bg-surface-container-low p-md">
+                    <p class="label">Effective Write Availability</p>
+                    <p class="mt-xs text-lg font-semibold {inspection.details?.Writable ? 'text-primary' : 'text-on-surface'}">{inspection.details?.WriteAvailability || 'Write availability not confirmed for this user'}</p>
+                  </div>
+                {/if}
+                <div class={activeTab === 'search' ? 'search-write-form mt-xl' : 'mt-md rounded border border-outline-variant bg-surface-container-low p-md'}>
+                  {#if activeTab === 'search'}
+                    <div class="flex items-center justify-between gap-md">
+                      <p class="label text-on-surface">Write Value</p>
+                      <span class="flex items-center gap-xs text-[10px] text-on-surface-variant"><span class="material-symbols-outlined text-[14px]">lock</span>Requires confirmation</span>
+                    </div>
+                  {:else}
+                    <div class="flex items-start justify-between gap-md">
+                      <div>
+                        <p class="label">Variable Node Write</p>
+                        <h3 class="mt-xs text-lg font-semibold">Write value</h3>
+                        <p class="mt-xs text-sm text-on-surface-variant">Available only from Variable Node Inspection. Every write requires confirmation and cannot be submitted with Enter.</p>
+                      </div>
+                      <span class="rounded px-sm py-xs text-xs font-bold {readOnlyMode ? 'bg-primary-container text-background' : 'bg-tertiary-container text-background'}">{readOnlyMode ? 'Read-Only Mode' : 'Changes Allowed'}</span>
+                    </div>
+                  {/if}
+                  <div class="mt-md grid gap-0 sm:grid-cols-[1fr_auto]">
                     <label class="space-y-xs">
-                      <span class="label">Target Value</span>
-                      <input class="field w-full" bind:value={writeTargetValue} on:keydown={(event) => event.key === 'Enter' && event.preventDefault()} placeholder={inspection.details?.DataType ? `Enter ${inspection.details.DataType}` : 'Waiting for data type'} />
+                      {#if activeTab !== 'search'}<span class="label">Target Value</span>{/if}
+                      <input aria-label="Target Value" class="field w-full" bind:value={writeTargetValue} on:keydown={(event) => event.key === 'Enter' && event.preventDefault()} placeholder={inspection.details?.DataType ? `Enter ${inspection.details.DataType}${activeTab === 'search' ? ' value…' : ''}` : 'Waiting for data type'} />
                     </label>
                     <div class="flex items-end">
-                      <button class="btn-primary h-9" disabled={!canOpenWriteConfirmation} on:click={openWriteConfirmation}>{writeSubmitting ? 'Writing…' : 'Write value'}</button>
+                      <button class="btn-primary h-10 sm:min-w-[144px]" disabled={!canOpenWriteConfirmation} on:click={openWriteConfirmation}>{writeSubmitting ? 'Writing…' : 'Write value'}</button>
                     </div>
                   </div>
+                  {#if activeTab === 'search'}
+                    <p class="mt-sm border-l-2 border-primary/70 pl-sm text-xs italic leading-relaxed text-on-surface-variant">Write operations are logged to diagnostic services. Ensure target equipment is in a safe state before committing changes.</p>
+                  {/if}
                   {#if writeDisabledReasons.length > 0}
-                    <ul class="mt-md list-disc space-y-xs pl-lg text-sm text-on-surface-variant">
+                    <ul class="mt-md list-disc space-y-xs pl-lg text-sm text-on-surface-variant {activeTab === 'search' ? 'search-write-reasons' : ''}">
                       {#each writeDisabledReasons as reason}<li>{reason}</li>{/each}
                     </ul>
                   {/if}
@@ -1212,9 +1183,9 @@
                 </div>
                 {#if inspection.outOfRange}<div class="mt-md rounded border border-tertiary-container bg-tertiary-container/10 p-md text-tertiary">Out-of-Range: {inspection.outOfRange}</div>{/if}
                 {#if inspection.error}<div class="mt-md rounded border border-error-container bg-error-container/20 p-md text-error">{inspection.error}</div>{/if}
-                <div class="mt-lg grid gap-md lg:grid-cols-2">
+                <div class={activeTab === 'search' ? 'search-metadata mt-xl grid gap-xl lg:grid-cols-2' : 'mt-lg grid gap-md lg:grid-cols-2'}>
                   <div class="min-w-0 space-y-sm">
-                    <p class="label">Metadata</p>
+                    <p class="label search-section-heading">{#if activeTab === 'search'}<span class="material-symbols-outlined text-[16px]">info</span>Technical Metadata{:else}Metadata{/if}</p>
                     <dl class="space-y-xs text-sm">
                       <div class="flex items-start justify-between gap-md"><dt class="shrink-0 text-on-surface-variant">NodeId</dt><dd class="min-w-0 break-all text-right font-mono">{inspection.node.NodeID}</dd></div>
                       <div class="flex items-start justify-between gap-md"><dt class="shrink-0 text-on-surface-variant">BrowseName</dt><dd class="min-w-0 break-all text-right font-mono">{inspection.node.BrowseName}</dd></div>
@@ -1225,7 +1196,7 @@
                     </dl>
                   </div>
                   <div class="space-y-sm">
-                    <p class="label">Timestamps</p>
+                    <p class="label search-section-heading">{#if activeTab === 'search'}<span class="material-symbols-outlined text-[16px]">schedule</span>Timestamps{:else}Timestamps{/if}</p>
                     <dl class="space-y-xs text-sm">
                       <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Source</dt><dd class="font-mono">{compactTime(inspection.value?.SourceTimestamp)}</dd></div>
                       <div class="flex justify-between gap-md"><dt class="text-on-surface-variant">Server</dt><dd class="font-mono">{compactTime(inspection.value?.ServerTimestamp)}</dd></div>
@@ -1233,6 +1204,15 @@
                     </dl>
                   </div>
                 </div>
+                {#if activeTab === 'search'}
+                  <div class="search-inspection-footer mt-xl flex flex-wrap items-center justify-between gap-md border-t border-outline-variant pt-lg text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
+                    <div class="flex items-center gap-lg">
+                      <button class="icon-label transition-colors hover:text-primary" on:click={openSessionTrend}><span class="material-symbols-outlined text-[16px]">desktop_windows</span>Open in Trend</button>
+                      <button class="icon-label transition-colors hover:text-primary" on:click={() => (activeTab = 'logs')}><span class="material-symbols-outlined text-[16px]">monitor_heart</span>Diagnostics</button>
+                    </div>
+                    <span class="flex items-center gap-xs"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>Session active</span>
+                  </div>
+                {/if}
               {:else if selectedNodeID}
                 <div class="flex h-full items-center justify-center p-lg text-center text-on-surface-variant">Object Nodes do not provide Variable Node Inspection or Method Call details.</div>
               {:else}
@@ -1243,12 +1223,13 @@
         </section>
       {:else if activeTab === 'watchlist'}
         <section class="space-y-lg">
-          <div class="flex items-end justify-between gap-md">
+          <div class="flex items-end justify-between gap-md border-b border-outline-variant pb-lg">
             <div>
               <p class="label">Watchlist</p>
-              <h2 class="text-3xl font-semibold">Watched Variable Nodes</h2>
+              <h2 class="text-3xl font-semibold text-on-surface">Watched Variable Nodes</h2>
               <p class="mt-sm text-on-surface-variant">Live Values from Variable Nodes selected during this Troubleshooting Session.</p>
             </div>
+            <span class="status-chip hidden sm:inline-flex">{watchlist.length} observed</span>
           </div>
 
           {#if !connected}
@@ -1369,8 +1350,8 @@
           </div>
         </section>
       {:else if activeTab === 'logs'}
-        <section class="panel overflow-hidden">
-          <div class="border-b border-outline-variant p-md"><p class="label">Diagnostic Logs</p></div>
+        <section class="panel mx-auto max-w-[1280px] overflow-hidden">
+          <div class="flex items-center justify-between border-b border-outline-variant p-md"><div><p class="label">Diagnostic Logs</p><h2 class="mt-xs text-xl font-semibold text-on-surface">Session event console</h2></div><span class="status-chip">{logs.length} events</span></div>
           <div class="max-h-[70vh] overflow-auto p-md font-mono text-sm">
             {#each logs as log}
               <div class="grid grid-cols-[170px_70px_1fr] gap-md border-b border-outline-variant/50 py-xs"><span class="text-on-surface-variant">{log.timestamp}</span><span class={log.level === 'error' ? 'text-error' : 'text-primary'}>{log.level}</span><span>{log.message}</span></div>
@@ -1380,6 +1361,192 @@
       {/if}
     </main>
   </div>
+
+  {#if connectionModalOpen}
+    <div class="connection-modal-backdrop" role="presentation" on:click={(event) => event.currentTarget === event.target && closeConnectionModal()}>
+      <div bind:this={connectionModal} class="connection-modal" role="dialog" aria-modal="true" aria-labelledby="connection-modal-heading" tabindex="-1" on:keydown={handleConnectionModalKeydown}>
+        <header class="connection-modal__header">
+          <div class="min-w-0">
+            <p class="label">Gateway Administration</p>
+            <h2 id="connection-modal-heading" class="mt-xs text-2xl font-semibold text-on-surface sm:text-3xl">Connect to an OPC UA Server</h2>
+            <p class="mt-sm max-w-3xl text-sm leading-relaxed text-on-surface-variant">Discover advertised endpoints, select the required security configuration, and begin a Read-Only Troubleshooting Session.</p>
+          </div>
+          <button class="connection-modal__close" aria-label="Close Connection Manager" title="Close Connection Manager" disabled={connecting || savingConnection} on:click={() => closeConnectionModal()}>
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </header>
+
+        <div class="connection-modal__body">
+          <div class="connection-modal__primary">
+            <section class="connection-section" aria-labelledby="endpoint-discovery-heading">
+              <div class="connection-section__heading">
+                <div class="flex items-center gap-sm">
+                  <span class="material-symbols-outlined text-primary">radar</span>
+                  <div>
+                    <p id="endpoint-discovery-heading" class="font-semibold text-on-surface">Endpoint Discovery</p>
+                    <p class="text-xs text-on-surface-variant">Enter an OPC UA Server URL to scan its advertised endpoints.</p>
+                  </div>
+                </div>
+                <span class="status-chip">{discovering ? 'Scanning' : 'Ready'}</span>
+              </div>
+              <div class="connection-discovery-form">
+                <label class="min-w-0">
+                  <span class="sr-only">OPC UA Server URL</span>
+                  <span class="material-symbols-outlined connection-input-icon">language</span>
+                  <input bind:this={endpointInput} aria-label="OPC UA Server URL" class="field w-full pl-[42px]" bind:value={endpointText} placeholder="opc.tcp://host:4840" on:keydown={(event) => event.key === 'Enter' && discover()} />
+                </label>
+                <button class="btn-primary whitespace-nowrap" disabled={discovering} on:click={discover}>{discovering ? 'Discovering…' : 'Discover Endpoints'}</button>
+              </div>
+            </section>
+
+            <section class="connection-section" aria-labelledby="saved-connections-heading">
+              <div class="connection-section__heading">
+                <div>
+                  <p id="saved-connections-heading" class="font-semibold text-on-surface">Saved Connections</p>
+                  <p class="text-xs text-on-surface-variant">Reconnect using locally stored, non-secret details.</p>
+                </div>
+                <span class="font-mono text-xs text-on-surface-variant">{savedConnections.length} saved</span>
+              </div>
+              {#if savedConnections.length === 0}
+                <div class="connection-empty-state">
+                  <span class="material-symbols-outlined text-2xl text-primary">bookmark_add</span>
+                  <p class="mt-xs font-medium text-on-surface">No Saved Connections yet.</p>
+                  <p class="mt-xs text-xs text-on-surface-variant">Enable “Save reconnect details” before connecting to keep this endpoint configuration.</p>
+                </div>
+              {:else}
+                <div class="connection-saved-grid">
+                  {#each savedConnections as saved (saved.id)}
+                    <article class="connection-saved-card">
+                      <button class="connection-saved-card__select" on:click={() => useSavedConnection(saved)}>
+                        <span class="material-symbols-outlined connection-saved-card__icon">dns</span>
+                        <span class="min-w-0 flex-1 text-left">
+                          <span class="block truncate font-semibold text-on-surface">{saved.name}</span>
+                          <span class="mt-xs block truncate font-mono text-xs text-primary">{saved.endpoint}</span>
+                          <span class="mt-xs block truncate text-xs text-on-surface-variant">{saved.securityPolicy || 'None'} / {saved.securityMode || 'None'} · {saved.authType}</span>
+                          <span class="mt-xs block truncate text-[11px] text-on-surface-variant">{formatSavedConnectionTime(saved.lastConnectedAt)}</span>
+                        </span>
+                      </button>
+                      <button class="connection-saved-card__delete" aria-label={`Delete Saved Connection ${saved.name}`} disabled={deletingSavedConnectionID === saved.id} on:click={(event) => deleteSavedConnection(saved, event)} title="Delete Saved Connection">
+                        <span class="material-symbols-outlined text-[18px]">delete_outline</span>
+                      </button>
+                    </article>
+                  {/each}
+                </div>
+              {/if}
+            </section>
+
+            <section class="connection-section connection-endpoints" aria-labelledby="advertised-endpoints-heading">
+              <div class="connection-section__heading">
+                <div>
+                  <p id="advertised-endpoints-heading" class="font-semibold text-on-surface">Advertised Endpoints</p>
+                  <p class="text-xs text-on-surface-variant">Choose the transport and message security policy to use.</p>
+                </div>
+                {#if endpoints.length > 0}<span class="font-mono text-xs text-on-surface-variant">{endpoints.length} found</span>{/if}
+              </div>
+              {#if endpoints.length === 0}
+                <div class="connection-empty-state">
+                  <span class="material-symbols-outlined text-2xl text-on-surface-variant">travel_explore</span>
+                  <p class="mt-xs text-sm text-on-surface-variant">Discover endpoints to configure this connection.</p>
+                </div>
+              {:else}
+                <div class="connection-endpoint-list" role="radiogroup" aria-label="Advertised OPC UA endpoints">
+                  {#each endpoints as endpoint, index}
+                    <button class:connection-endpoint--selected={selectedEndpoint === index} class="connection-endpoint" role="radio" aria-checked={selectedEndpoint === index} on:click={() => (selectedEndpoint = index)}>
+                      <span class="connection-endpoint__radio" aria-hidden="true"></span>
+                      <span class="min-w-0 flex-1 text-left">
+                        <span class="flex flex-wrap items-center gap-sm"><span class="font-semibold text-on-surface">{endpoint.SecurityPolicy || 'None'} / {selectedEndpoint === index ? selectedSecurityMode || 'None' : endpoint.SecurityMode?.replace('MessageSecurityMode', '').trim() || 'None'}</span><span class="status-chip !py-0.5">L{endpoint.SecurityLevel}</span></span>
+                        <span class="mt-xs block truncate font-mono text-xs text-on-surface-variant">{endpoint.URL}</span>
+                        <span class="mt-xs block text-xs text-on-surface-variant">Authentication: {endpoint.UserTokenTypes.join(', ') || 'Unknown'}</span>
+                      </span>
+                      <span class="material-symbols-outlined text-on-surface-variant">chevron_right</span>
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </section>
+          </div>
+
+          <aside class="connection-security" aria-labelledby="security-configuration-heading">
+            <div class="connection-security__header">
+              <div>
+                <p class="label">Security Configuration</p>
+                <h3 id="security-configuration-heading" class="mt-xs text-lg font-semibold text-on-surface">Session credentials</h3>
+              </div>
+              <span class="material-symbols-outlined text-primary">shield</span>
+            </div>
+
+            {#if selectedEndpointInfo}
+              <div class="connection-selected-endpoint">
+                <span class="label !text-[9px]">Selected endpoint</span>
+                <p class="mt-xs break-all font-mono text-xs text-primary">{selectedEndpointInfo.URL}</p>
+                <p class="mt-xs text-xs text-on-surface-variant">{selectedEndpointInfo.SecurityPolicy || 'None'} / {selectedSecurityMode || 'None'}</p>
+              </div>
+
+              <fieldset class="connection-fieldset">
+                <legend class="connection-fieldset__legend">Authentication method</legend>
+                <div class="connection-auth-options">
+                  <button class:connection-auth-option--selected={authType === 'Anonymous'} class="connection-auth-option" aria-pressed={authType === 'Anonymous'} on:click={() => (authType = 'Anonymous')}>
+                    <span class="material-symbols-outlined text-[18px]">person_off</span> Anonymous
+                  </button>
+                  <button class:connection-auth-option--selected={authType === 'UserName'} class="connection-auth-option" aria-pressed={authType === 'UserName'} disabled={!canUseUsername} on:click={() => (authType = 'UserName')}>
+                    <span class="material-symbols-outlined text-[18px]">person</span> Username
+                  </button>
+                </div>
+                {#if !canUseUsername}<p class="mt-sm text-xs text-on-surface-variant">The selected endpoint does not advertise username authentication.</p>{/if}
+              </fieldset>
+
+              {#if authType === 'UserName'}
+                <div class="space-y-md">
+                  <label class="block space-y-xs"><span class="label !text-[9px]">Username</span><input aria-label="Username" class="field w-full" bind:value={username} autocomplete="username" /></label>
+                  <label class="block space-y-xs"><span class="label !text-[9px]">Password</span><input aria-label="Password" class="field w-full" type="password" bind:value={password} autocomplete="current-password" /></label>
+                  <p class="text-xs text-on-surface-variant">Passwords are only used for this connection and are never saved.</p>
+                </div>
+              {/if}
+
+              {#if selectedEndpointIsSecure}
+                <div class="connection-certificate-fields">
+                  <div class="flex items-start gap-sm">
+                    <span class="material-symbols-outlined mt-0.5 text-primary">key</span>
+                    <p class="text-xs leading-relaxed text-on-surface-variant">This secure endpoint requires a PEM/CRT Client Certificate and PEM/KEY private key.</p>
+                  </div>
+                  <label class="block space-y-xs">
+                    <span class="label !text-[9px]">Client Certificate path (.crt)</span>
+                    <span class="flex gap-sm"><input aria-label="Client Certificate Path" class="field min-w-0 flex-1" bind:value={clientCertificatePath} placeholder="C:\\certs\\client.crt" /><button class="btn-secondary shrink-0" on:click={pickClientCertificate}>Browse…</button></span>
+                  </label>
+                  <label class="block space-y-xs">
+                    <span class="label !text-[9px]">Private key path (.key)</span>
+                    <span class="flex gap-sm"><input aria-label="Private Key Path" class="field min-w-0 flex-1" bind:value={clientPrivateKeyPath} placeholder="C:\\certs\\client.key" /><button class="btn-secondary shrink-0" on:click={pickClientPrivateKey}>Browse…</button></span>
+                  </label>
+                </div>
+              {/if}
+
+              <label class="connection-save-option">
+                <input aria-label="Save reconnect details" type="checkbox" bind:checked={saveConnectionOnConnect} />
+                <span><span class="block font-medium text-on-surface">{saveConnectionLabel}</span><span class="mt-xs block text-xs text-on-surface-variant">Only non-secret endpoint details are stored locally.</span></span>
+              </label>
+              {#if saveConnectionOnConnect}
+                <label class="block space-y-xs"><span class="label !text-[9px]">Saved Connection Name</span><input aria-label="Saved Connection Name" class="field w-full" bind:value={connectionName} placeholder="Control Gateway" />{#if editingSavedConnectionName}<span class="block text-xs text-on-surface-variant">Updating {editingSavedConnectionName}</span>{/if}</label>
+              {/if}
+
+              <div class="connection-safety-note"><span class="material-symbols-outlined text-[18px] text-primary">verified_user</span><p>New sessions start in Read-Only Mode. Changes must be explicitly allowed after connecting.</p></div>
+              <button class="btn-primary w-full" disabled={!canConnect} on:click={connect}>{connecting ? 'Connecting…' : savingConnection ? 'Saving…' : 'Initialize Connection'}</button>
+              {#if savingRequiresName}
+                <p class="text-center text-xs text-tertiary">Enter a Saved Connection name to save these reconnect details.</p>
+              {:else if passwordRequired && !password}
+                <p class="text-center text-xs text-tertiary">Enter the password before connecting.</p>
+              {:else if selectedEndpointIsSecure && (!clientCertificatePath || !clientPrivateKeyPath)}
+                <p class="text-center text-xs text-tertiary">Provide a Client Certificate and private key for this secure endpoint.</p>
+              {/if}
+            {:else}
+              <div class="connection-security__waiting"><span class="material-symbols-outlined text-3xl text-primary">shield</span><p class="mt-sm font-medium text-on-surface">Security configuration waits for an endpoint</p><p class="mt-xs text-sm text-on-surface-variant">Discover the OPC UA Server, then select one of its advertised endpoints.</p></div>
+            {/if}
+
+            {#if connectionError}<div class="connection-error" role="alert"><span class="material-symbols-outlined text-[18px]">error</span><span>{connectionError}</span></div>{/if}
+          </aside>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   {#if writeConfirmOpen && inspection && writeConfirmationSnapshot}
     <div class="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-lg">
@@ -1418,7 +1585,7 @@
 
   <div class="pointer-events-none fixed right-md top-md z-50 space-y-sm">
     {#each toasts as toast}
-      <div class="w-96 rounded border border-outline-variant bg-surface-container-high p-md text-sm shadow-xl {toast.level === 'error' ? 'text-error' : 'text-on-surface'}">{toast.message}</div>
+      <div class="w-96 border border-outline-variant border-l-2 bg-surface-container-high p-md text-sm shadow-xl {toast.level === 'error' ? 'border-l-error text-error' : 'border-l-primary text-on-surface'}">{toast.message}</div>
     {/each}
   </div>
 </div>

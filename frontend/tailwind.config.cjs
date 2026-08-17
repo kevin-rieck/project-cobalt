@@ -1,44 +1,46 @@
+/** @type {import('tailwindcss').Config} */
 module.exports = {
   content: ['./index.html', './src/**/*.{svelte,ts,js}'],
   theme: {
     extend: {
       colors: {
-        'primary-fixed-dim': '#7bd0ff',
-        'inverse-on-surface': '#283044',
-        'surface-container-low': '#131b2e',
-        'inverse-surface': '#dae2fd',
-        'surface-container-high': '#222a3d',
-        primary: '#8ed5ff',
-        'error-container': '#93000a',
-        'surface-bright': '#31394d',
-        secondary: '#b9c8de',
-        'surface-container-highest': '#2d3449',
-        'on-surface': '#dae2fd',
-        'surface-tint': '#7bd0ff',
-        'surface-variant': '#2d3449',
-        error: '#ffb4ab',
-        'surface-dim': '#0b1326',
-        'surface-container-lowest': '#060e20',
-        'on-surface-variant': '#bdc8d1',
-        'secondary-container': '#39485a',
-        'on-secondary-container': '#a7b6cc',
-        'on-secondary': '#233143',
-        'on-primary': '#00354a',
-        outline: '#87929a',
-        background: '#0b1326',
-        surface: '#0b1326',
-        'surface-container': '#171f33',
-        'on-error-container': '#ffdad6',
-        'primary-container': '#38bdf8',
-        tertiary: '#ffc176',
-        'tertiary-container': '#f1a02b',
-        'outline-variant': '#3e484f',
-        'on-background': '#dae2fd'
+        // Industrial night-shift palette: high contrast surfaces, precise cyan actions.
+        background: '#030817',
+        surface: '#060d1b',
+        'surface-dim': '#030817',
+        'surface-container-lowest': '#050b18',
+        'surface-container-low': '#081121',
+        'surface-container': '#0b1526',
+        'surface-container-high': '#101c30',
+        'surface-container-highest': '#16233a',
+        'surface-bright': '#1d2b43',
+        'surface-variant': '#16233a',
+        'on-background': '#f4f7ff',
+        'on-surface': '#eef3fc',
+        'on-surface-variant': '#9caac0',
+        'inverse-on-surface': '#111a2c',
+        'inverse-surface': '#eef3fc',
+        primary: '#39c1f4',
+        'primary-fixed-dim': '#71d5fb',
+        'primary-container': '#3ab8eb',
+        'on-primary': '#03101a',
+        'surface-tint': '#39c1f4',
+        secondary: '#d8e1ef',
+        'secondary-container': '#173149',
+        'on-secondary': '#101b2a',
+        'on-secondary-container': '#d9ebf6',
+        tertiary: '#f7bb62',
+        'tertiary-container': '#e99a28',
+        error: '#ff9b9b',
+        'error-container': '#7f2633',
+        'on-error-container': '#ffd9dc',
+        outline: '#8996aa',
+        'outline-variant': '#44536a'
       },
       borderRadius: {
         DEFAULT: '0.125rem',
-        lg: '0.25rem',
-        xl: '0.5rem'
+        lg: '0.1875rem',
+        xl: '0.25rem'
       },
       spacing: {
         xs: '4px',
@@ -46,12 +48,15 @@ module.exports = {
         md: '16px',
         lg: '24px',
         xl: '32px',
-        'margin-desktop': '40px',
-        'sidebar-width': '280px'
+        'margin-desktop': '32px',
+        'sidebar-width': '260px'
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'monospace']
+        sans: ['Poppins', 'Inter', 'system-ui', 'sans-serif'],
+        mono: ['JetBrains Mono', 'ui-monospace', 'monospace']
+      },
+      boxShadow: {
+        panel: '0 14px 32px rgba(0, 0, 0, 0.18)'
       }
     }
   },

@@ -78,10 +78,17 @@ type InspectionSet struct {
 	trendOrder     []string
 	trendNodes     map[string]opcua.AddressNode
 	trends         map[string][]SessionTrendPoint
+	now            func() time.Time
 }
 
-func NewInspectionSet() *InspectionSet {
-	return &InspectionSet{inspections: map[string]*VariableNodeInspection{}, trendNodes: map[string]opcua.AddressNode{}, trends: map[string][]SessionTrendPoint{}}
+// NewInspectionSet creates an inspection set. Tests and application adapters
+// may provide a clock; the production default is time.Now.
+func NewInspectionSet(clock ...func() time.Time) *InspectionSet {
+	now := time.Now
+	if len(clock) > 0 && clock[0] != nil {
+		now = clock[0]
+	}
+	return &InspectionSet{inspections: map[string]*VariableNodeInspection{}, trendNodes: map[string]opcua.AddressNode{}, trends: map[string][]SessionTrendPoint{}, now: now}
 }
 
 func (s *InspectionSet) Select(node opcua.AddressNode) []Request {
@@ -294,7 +301,7 @@ func (s *InspectionSet) appendTrendPoint(node opcua.AddressNode, value opcua.Liv
 	if _, ok := s.trends[node.NodeID]; !ok {
 		s.trendOrder = append(s.trendOrder, node.NodeID)
 	}
-	receivedAt := time.Now().Format(time.RFC3339Nano)
+	receivedAt := s.now().Format(time.RFC3339Nano)
 	point := SessionTrendPoint{
 		Value:           value.Value,
 		Status:          value.Status,

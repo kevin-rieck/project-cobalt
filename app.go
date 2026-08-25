@@ -2,68 +2,52 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"strings"
-	"sync"
-	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"opcua-studio/internal/application"
 	"opcua-studio/internal/connections"
 	"opcua-studio/internal/opcua"
 	"opcua-studio/internal/search"
 	"opcua-studio/internal/session"
 )
 
-const (
-	eventVariableInspectionUpdated = "variable-inspection-updated"
-	eventWatchlistUpdated          = "watchlist-updated"
-	eventSessionTrendUpdated       = "session-trend-updated"
-	eventDiagnosticLogAppended     = "diagnostic-log-appended"
-	eventSessionSafetyUpdated      = "session-safety-updated"
-	defaultDisconnectCloseTimeout  = 2 * time.Second
-)
-
-// App is the Wails backend boundary for OPC UA Studio.
+// App is the Wails delivery adapter for OPC UA Studio. Troubleshooting Session
+// behavior lives in the platform-neutral application.Studio.
 type App struct {
-	ctx context.Context
-
-	mu                           sync.Mutex
-	methodExecutionMu            sync.RWMutex
-	client                       opcua.Client
-	newClient                    func() opcua.Client
-	inspections                  *session.InspectionSet
-	addressSpaceSearchSession    *search.Session
-	newAddressSpaceSearchSession func(context.Context, search.Browser) *search.Session
-	logs                         []DiagnosticLogEntry
-	savedConnections             []connections.SavedConnection
-	savedStore                   *connections.FileStore
-	connected                    bool
-	readOnlyMode                 bool
-	trendNotifyPending           bool
-	disconnectCloseTimeout       time.Duration
+	studio *application.Studio
+	ctx    context.Context
+	emit   func(context.Context, application.Event)
 }
 
-// NewApp creates a new App application struct.
+// NewApp creates the desktop delivery adapter.
 func NewApp() *App {
 	return NewAppWithSavedConnectionStore(connections.DefaultStorePath())
 }
 
 func NewAppWithSavedConnectionStore(path string) *App {
-	return &App{client: opcua.NewClient(), newClient: opcua.NewClient, inspections: session.NewInspectionSet(), savedStore: connections.NewFileStore(path), savedConnections: []connections.SavedConnection{}, readOnlyMode: true, disconnectCloseTimeout: defaultDisconnectCloseTimeout}
+	return newApp(application.NewStudioWithSavedConnectionStore(path), wailsEventEmitter)
 }
 
-// startup is called when the app starts. The context is saved so we can emit runtime events.
+func newApp(studio *application.Studio, emit func(context.Context, application.Event)) *App {
+	app := &App{studio: studio, emit: emit}
+	studio.SetEventSink(app.forwardEvent)
+	return app
+}
+
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	if saved, err := a.savedStore.Load(); err != nil {
-		a.appendLog("error", fmt.Sprintf("Loading Saved Connections failed: %v", err))
-	} else {
-		a.mu.Lock()
-		a.savedConnections = saved
-		a.mu.Unlock()
+	a.studio.Start(ctx)
+}
+
+func (a *App) forwardEvent(event application.Event) {
+	a.emit(a.ctx, event)
+}
+
+func wailsEventEmitter(ctx context.Context, event application.Event) {
+	if ctx != nil {
+		runtime.EventsEmit(ctx, string(event.Type()), event.Payload())
 	}
-	a.appendLog("info", "OPC UA Studio started")
 }
 
 type DiagnosticLogEntry struct {
@@ -90,20 +74,6 @@ type ConnectionRequest struct {
 	ClientCertificatePath string         `json:"clientCertificatePath"`
 	ClientPrivateKeyPath  string         `json:"clientPrivateKeyPath"`
 	ServerThumbprint      string         `json:"serverThumbprint"`
-}
-
-type VariableNodeInspectionView struct {
-	Node           opcua.AddressNode `json:"node"`
-	Value          opcua.LiveValue   `json:"value"`
-	Details        opcua.NodeDetails `json:"details"`
-	Subscribing    bool              `json:"subscribing"`
-	LoadingDetails bool              `json:"loadingDetails"`
-	Stale          bool              `json:"stale"`
-	OutOfRange     string            `json:"outOfRange"`
-	UpdateCount    int               `json:"updateCount"`
-	Watched        bool              `json:"watched"`
-	Error          string            `json:"error"`
-	DetailsError   string            `json:"detailsError"`
 }
 
 type WatchlistRowView struct {
@@ -143,180 +113,101 @@ type VariableNodeWriteResult struct {
 }
 
 func (a *App) GetSessionSafety() SessionSafetyView {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.sessionSafetyLocked()
+	return sessionSafetyView(a.studio.GetSessionSafety())
 }
 
 func (a *App) SetReadOnlyMode(enabled bool) error {
-	a.methodExecutionMu.Lock()
-	a.mu.Lock()
-	if !enabled && !a.connected {
-		a.mu.Unlock()
-		a.methodExecutionMu.Unlock()
-		return fmt.Errorf("Read-Only Mode can be disabled only for a connected session")
-	}
-	wasReadOnly := a.readOnlyMode
-	a.readOnlyMode = enabled
-	view := a.sessionSafetyLocked()
-	a.mu.Unlock()
-	a.methodExecutionMu.Unlock()
-	if enabled && !wasReadOnly {
-		a.appendLog("info", "Read-Only Mode enabled")
-	}
-	a.emitSessionSafetyUpdated(view)
-	return nil
+	return a.studio.SetReadOnlyMode(enabled)
 }
 
 func (a *App) DiscoverEndpoints(endpoint string) ([]opcua.Endpoint, error) {
-	a.appendLog("info", fmt.Sprintf("Discovering endpoints for %s", endpoint))
-	endpoints, err := a.client.DiscoverEndpoints(a.ctx, endpoint)
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Endpoint discovery failed: %v", err))
-		return nil, err
-	}
-	a.appendLog("info", fmt.Sprintf("Discovered %d endpoints", len(endpoints)))
-	return endpoints, nil
+	return a.studio.DiscoverEndpoints(endpoint)
 }
 
 func (a *App) GetSavedConnections() []connections.SavedConnection {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	saved := make([]connections.SavedConnection, len(a.savedConnections))
-	copy(saved, a.savedConnections)
-	return saved
+	return a.studio.GetSavedConnections()
 }
 
 func (a *App) SaveSavedConnection(request ConnectionRequest) (connections.SavedConnection, error) {
-	saved, err := a.savedStore.Save(connections.SaveRequest{
-		ExistingName:                request.ExistingName,
-		Name:                        request.Name,
-		Endpoint:                    request.Endpoint,
-		SecurityPolicy:              request.SecurityPolicy,
-		SecurityMode:                request.SecurityMode,
-		AuthType:                    string(request.AuthType),
-		Username:                    request.Username,
-		Password:                    request.Password,
-		ClientCertificatePath:       request.ClientCertificatePath,
-		ClientPrivateKeyPath:        request.ClientPrivateKeyPath,
-		ServerCertificateThumbprint: request.ServerThumbprint,
-	}, time.Now())
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Saving Saved Connection failed: %v", err))
-		return connections.SavedConnection{}, err
-	}
-	a.mu.Lock()
-	a.savedConnections, err = a.savedStore.Load()
-	if err != nil {
-		a.mu.Unlock()
-		a.appendLog("error", fmt.Sprintf("Reloading Saved Connections failed: %v", err))
-		return connections.SavedConnection{}, err
-	}
-	a.mu.Unlock()
-	a.appendLog("info", fmt.Sprintf("Saved Connection %q", saved.Name))
-	return saved, nil
+	return a.studio.SaveSavedConnection(applicationConnectionRequest(request))
 }
 
 func (a *App) DeleteSavedConnection(id string) (bool, error) {
-	deleted, err := a.savedStore.Delete(id)
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Deleting Saved Connection failed: %v", err))
-		return false, err
-	}
-	if !deleted {
-		return false, nil
-	}
-	saved, err := a.savedStore.Load()
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Reloading Saved Connections failed: %v", err))
-		return true, err
-	}
-	a.mu.Lock()
-	a.savedConnections = saved
-	a.mu.Unlock()
-	a.appendLog("info", "Deleted Saved Connection")
-	return true, nil
+	return a.studio.DeleteSavedConnection(id)
 }
 
 func (a *App) Connect(request ConnectionRequest) error {
-	if request.AuthType == opcua.AuthUsername && strings.TrimSpace(request.Password) == "" {
-		err := fmt.Errorf("username authentication requires password entry at connect time")
-		a.appendLog("error", fmt.Sprintf("Connection failed: %v", err))
-		return err
-	}
-	connectRequest := opcua.ConnectRequest{
-		Endpoint:              request.Endpoint,
-		SecurityPolicy:        request.SecurityPolicy,
-		SecurityMode:          request.SecurityMode,
-		AuthType:              request.AuthType,
-		Username:              request.Username,
-		Password:              request.Password,
-		ClientCertificatePath: request.ClientCertificatePath,
-		ClientPrivateKeyPath:  request.ClientPrivateKeyPath,
-	}
-	a.appendLog("info", fmt.Sprintf("Connecting to %s (%s / %s / %s)", request.Endpoint, request.SecurityPolicy, request.SecurityMode, request.AuthType))
-	if request.ServerThumbprint != "" {
-		a.appendLog("info", fmt.Sprintf("Selected server certificate thumbprint: %s", request.ServerThumbprint))
-	}
-
-	a.mu.Lock()
-	previousClient := a.client
-	clientToConnect := previousClient
-	reconnecting := a.connected
-	if reconnecting {
-		newClient := a.newClient
-		if newClient == nil {
-			newClient = opcua.NewClient
-		}
-		clientToConnect = newClient()
-	}
-	a.mu.Unlock()
-
-	if err := clientToConnect.Connect(a.ctx, connectRequest); err != nil {
-		if reconnecting {
-			_ = a.closeClient(clientToConnect)
-		}
-		a.appendLog("error", fmt.Sprintf("Connection failed: %v", err))
-		return err
-	}
-	if request.SavedConnectionID != "" || request.Name != "" {
-		if _, ok, err := a.savedStore.MarkConnected(request.SavedConnectionID, request.Name, time.Now()); err != nil {
-			a.appendLog("error", fmt.Sprintf("Updating Saved Connection last connected time failed: %v", err))
-		} else if ok {
-			if saved, err := a.savedStore.Load(); err != nil {
-				a.appendLog("error", fmt.Sprintf("Reloading Saved Connections failed: %v", err))
-			} else {
-				a.mu.Lock()
-				a.savedConnections = saved
-				a.mu.Unlock()
-			}
-		}
-	}
-	a.methodExecutionMu.Lock()
-	a.mu.Lock()
-	a.stopAddressSpaceSearchSessionLocked()
-	a.client = clientToConnect
-	a.connected = true
-	a.readOnlyMode = true
-	a.inspections = session.NewInspectionSet()
-	a.addressSpaceSearchSession = a.startAddressSpaceSearchSessionLocked()
-	safety := a.sessionSafetyLocked()
-	a.mu.Unlock()
-	a.methodExecutionMu.Unlock()
-
-	if reconnecting {
-		if closeErr := a.closeClient(previousClient); closeErr != nil {
-			a.appendLog("error", fmt.Sprintf("Closing previous OPC UA client after reconnect failed: %v", closeErr))
-		}
-	}
-	a.emitSessionSafetyUpdated(safety)
-	a.emitInspection(nil)
-	a.emitWatchlist()
-	a.emitSessionTrendUpdated()
-	a.appendLog("info", "Connected")
-	return nil
+	return a.studio.Connect(applicationConnectionRequest(request))
 }
 
+func (a *App) Disconnect() error {
+	return a.studio.Disconnect()
+}
+
+func (a *App) BrowseChildren(nodeID string) ([]opcua.AddressNode, error) {
+	return a.studio.BrowseChildren(nodeID)
+}
+
+func (a *App) SearchAddressSpace(query string) (search.AddressSpaceSearchView, error) {
+	return a.studio.SearchAddressSpace(query)
+}
+
+func (a *App) GetMethodDetails(request MethodNodeRequest) (opcua.MethodDetails, error) {
+	return a.studio.GetMethodDetails(application.MethodNodeRequest(request))
+}
+
+func (a *App) CallMethod(request MethodCallRequest) (opcua.MethodCallResult, error) {
+	return a.studio.CallMethod(application.MethodCallRequest(request))
+}
+
+func (a *App) InspectVariableNode(node opcua.AddressNode) error {
+	return a.studio.InspectVariableNode(node)
+}
+
+func (a *App) ClearVariableNodeInspection() error {
+	return a.studio.ClearVariableNodeInspection()
+}
+
+func (a *App) WatchVariableNode(node opcua.AddressNode) error {
+	return a.studio.WatchVariableNode(node)
+}
+
+func (a *App) UnwatchVariableNode(nodeID string) error {
+	return a.studio.UnwatchVariableNode(nodeID)
+}
+
+func (a *App) GetWatchlist() []WatchlistRowView {
+	rows := a.studio.GetWatchlist()
+	views := make([]WatchlistRowView, len(rows))
+	for i, row := range rows {
+		views[i] = watchlistRowView(row)
+	}
+	return views
+}
+
+func (a *App) GetSessionTrend(focusedNodeID string) session.SessionTrendView {
+	return a.studio.GetSessionTrend(focusedNodeID)
+}
+
+func (a *App) RefreshVariableNodeValue(nodeID string) error {
+	return a.studio.RefreshVariableNodeValue(nodeID)
+}
+
+func (a *App) WriteVariableNodeValue(request VariableNodeWriteRequest) (VariableNodeWriteResult, error) {
+	result, err := a.studio.WriteVariableNodeValue(application.VariableNodeWriteRequest(request))
+	return variableNodeWriteResult(result), err
+}
+
+func (a *App) GetDiagnosticLogs() []DiagnosticLogEntry {
+	logs := a.studio.GetDiagnosticLogs()
+	entries := make([]DiagnosticLogEntry, len(logs))
+	for i, entry := range logs {
+		entries[i] = DiagnosticLogEntry(entry)
+	}
+	return entries
+}
+
+// PickClientCertificate retains Wails-native Client Certificate selection.
 func (a *App) PickClientCertificate() (string, error) {
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Select OPC UA Client Certificate",
@@ -327,6 +218,7 @@ func (a *App) PickClientCertificate() (string, error) {
 	})
 }
 
+// PickClientPrivateKey retains Wails-native Client Private Key selection.
 func (a *App) PickClientPrivateKey() (string, error) {
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Select OPC UA Client Private Key",
@@ -337,612 +229,18 @@ func (a *App) PickClientPrivateKey() (string, error) {
 	})
 }
 
-func (a *App) Disconnect() error {
-	a.appendLog("info", "Disconnecting")
-
-	a.methodExecutionMu.Lock()
-	a.mu.Lock()
-	a.stopAddressSpaceSearchSessionLocked()
-	clientToClose := a.client
-	a.client = opcua.NewClient()
-	a.inspections = session.NewInspectionSet()
-	a.connected = false
-	a.readOnlyMode = true
-	safety := a.sessionSafetyLocked()
-	a.mu.Unlock()
-	a.methodExecutionMu.Unlock()
-
-	a.emitSessionSafetyUpdated(safety)
-	a.emitInspection(nil)
-	a.emitWatchlist()
-	a.emitSessionTrendUpdated()
-
-	if closeErr := a.closeClient(clientToClose); closeErr != nil {
-		a.appendLog("error", fmt.Sprintf("Disconnect failed: %v", closeErr))
-	}
-	a.appendLog("info", "Disconnected")
-	return nil
+func applicationConnectionRequest(request ConnectionRequest) application.ConnectionRequest {
+	return application.ConnectionRequest(request)
 }
 
-func (a *App) closeClient(client opcua.Client) error {
-	closeTimeout := a.disconnectCloseTimeout
-	if closeTimeout <= 0 {
-		closeTimeout = defaultDisconnectCloseTimeout
-	}
-	closeBase := a.ctx
-	if closeBase == nil {
-		closeBase = context.Background()
-	}
-	closeCtx, cancelClose := context.WithTimeout(closeBase, closeTimeout)
-	defer cancelClose()
-
-	closeDone := make(chan error, 1)
-	go func() { closeDone <- client.Close(closeCtx) }()
-	select {
-	case err := <-closeDone:
-		return err
-	case <-closeCtx.Done():
-		return fmt.Errorf("timed out closing OPC UA client after %s", closeTimeout)
-	}
+func sessionSafetyView(view application.SessionSafetyView) SessionSafetyView {
+	return SessionSafetyView(view)
 }
 
-func (a *App) startAddressSpaceSearchSessionLocked() *search.Session {
-	var searchSession *search.Session
-	if a.newAddressSpaceSearchSession != nil {
-		searchSession = a.newAddressSpaceSearchSession(a.ctx, a.client)
-	} else {
-		searchSession = search.NewSession(a.ctx, a.client)
-	}
-	go a.consumeAddressSpaceSearchEvents(searchSession)
-	return searchSession
+func watchlistRowView(row application.WatchlistRowView) WatchlistRowView {
+	return WatchlistRowView(row)
 }
 
-func (a *App) consumeAddressSpaceSearchEvents(searchSession *search.Session) {
-	for event := range searchSession.Events() {
-		a.mu.Lock()
-		isCurrentSession := a.addressSpaceSearchSession == searchSession
-		a.mu.Unlock()
-		if !isCurrentSession {
-			continue
-		}
-
-		switch event := event.(type) {
-		case search.BackgroundBrowseFailed:
-			a.appendLog("error", fmt.Sprintf("Shallow Address Space Indexing browse failed for %s: %v", event.NodeID, event.Err))
-		case search.PriorityQueueOverflow:
-			a.appendLog("error", fmt.Sprintf("Shallow Address Space Indexing priority queue is full; %d parent nodes were not prioritized", event.DroppedParentCount))
-		case search.IndexingBudgetExhausted:
-			a.appendLog("info", fmt.Sprintf("Shallow Address Space Indexing reached its session budget after %d browse requests", event.BrowseCount))
-		}
-	}
-}
-
-func (a *App) stopAddressSpaceSearchSessionLocked() {
-	if a.addressSpaceSearchSession != nil {
-		a.addressSpaceSearchSession.Stop()
-		a.addressSpaceSearchSession = nil
-	}
-}
-
-func (a *App) BrowseChildren(nodeID string) ([]opcua.AddressNode, error) {
-	if nodeID == "" {
-		nodeID = "i=85"
-	}
-	a.appendLog("info", fmt.Sprintf("Browsing children of %s", nodeID))
-	a.mu.Lock()
-	searchSession := a.addressSpaceSearchSession
-	a.mu.Unlock()
-	if searchSession == nil {
-		err := fmt.Errorf("connect to an OPC UA Server to browse Address Space children")
-		a.appendLog("error", fmt.Sprintf("Browse failed for %s: %v", nodeID, err))
-		return nil, err
-	}
-	children, err := searchSession.BrowseChildren(nodeID)
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Browse failed for %s: %v", nodeID, err))
-		return nil, err
-	}
-	a.appendLog("info", fmt.Sprintf("Browsed %d children of %s", len(children), nodeID))
-	return children, nil
-}
-
-func (a *App) SearchAddressSpace(query string) (search.AddressSpaceSearchView, error) {
-	a.mu.Lock()
-	connected := a.connected
-	searchSession := a.addressSpaceSearchSession
-	a.mu.Unlock()
-	if !connected || searchSession == nil {
-		return search.AddressSpaceSearchView{Query: query, Results: []search.AddressSpaceSearchResult{}, Status: "Connect to an OPC UA Server to search browsed Address Space metadata."}, nil
-	}
-	return searchSession.Search(query), nil
-}
-
-func (a *App) GetMethodDetails(request MethodNodeRequest) (opcua.MethodDetails, error) {
-	a.mu.Lock()
-	connected := a.connected
-	client := a.client
-	a.mu.Unlock()
-	if !connected {
-		return opcua.MethodDetails{}, fmt.Errorf("Method inspection requires a connected session")
-	}
-	if strings.TrimSpace(request.ObjectNodeID) == "" || strings.TrimSpace(request.MethodNodeID) == "" {
-		return opcua.MethodDetails{}, fmt.Errorf("Method inspection requires Object and Method Node IDs")
-	}
-
-	a.appendLog("info", fmt.Sprintf("Reading Method details for Object Node %s Method Node %s", request.ObjectNodeID, request.MethodNodeID))
-	details, err := client.ReadMethodDetails(a.ctx, request.ObjectNodeID, request.MethodNodeID)
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Reading Method details failed for Object Node %s Method Node %s: %v", request.ObjectNodeID, request.MethodNodeID, err))
-		return opcua.MethodDetails{}, err
-	}
-	return details, nil
-}
-
-func (a *App) CallMethod(request MethodCallRequest) (opcua.MethodCallResult, error) {
-	objectNodeID := strings.TrimSpace(request.ObjectNodeID)
-	methodNodeID := strings.TrimSpace(request.MethodNodeID)
-	if objectNodeID == "" || methodNodeID == "" {
-		return opcua.MethodCallResult{}, fmt.Errorf("Method call requires Object and Method Node IDs")
-	}
-
-	a.appendLog("info", fmt.Sprintf("Method call attempted for Object Node %s Method Node %s", objectNodeID, methodNodeID))
-	a.mu.Lock()
-	connected := a.connected
-	readOnly := a.readOnlyMode
-	client := a.client
-	a.mu.Unlock()
-	if !connected {
-		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method call requires a connected session"))
-	}
-	if readOnly {
-		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method call is blocked while Read-Only Mode is active"))
-	}
-
-	details, err := client.ReadMethodDetails(a.ctx, objectNodeID, methodNodeID)
-	if err != nil {
-		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("re-read Method metadata: %w", err))
-	}
-	if !details.Executable {
-		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method is not executable"))
-	}
-	if !details.UserExecutable {
-		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method is not executable for the current session"))
-	}
-	if len(request.InputArguments) != len(details.InputArguments) {
-		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method requires exactly %d input arguments, got %d", len(details.InputArguments), len(request.InputArguments)))
-	}
-
-	inputs := make([]opcua.ScalarValue, len(details.InputArguments))
-	for i, argument := range details.InputArguments {
-		if argument.ValueRank != "Scalar" {
-			return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method input argument %d (%s) has unsupported non-scalar ValueRank %q", i+1, argument.Name, argument.ValueRank))
-		}
-		if !argument.Supported {
-			return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method input argument %d (%s) has unsupported DataType %q", i+1, argument.Name, argument.DataType))
-		}
-		inputs[i], err = opcua.ParseScalarValue(argument.DataType, request.InputArguments[i])
-		if err != nil {
-			parseErr := fmt.Errorf("parse Method input argument %d (%s): %w", i+1, argument.Name, err)
-			a.appendLog("error", fmt.Sprintf("Method call failed for Object Node %s Method Node %s: input argument %d failed validation", objectNodeID, methodNodeID, i+1))
-			return opcua.MethodCallResult{}, parseErr
-		}
-	}
-
-	// Serialize execution with session safety transitions so Read-Only Mode or
-	// disconnect cannot take effect between this check and the server request.
-	a.methodExecutionMu.RLock()
-	a.mu.Lock()
-	connected = a.connected
-	readOnly = a.readOnlyMode
-	clientChanged := a.client != client
-	a.mu.Unlock()
-	if !connected || clientChanged {
-		a.methodExecutionMu.RUnlock()
-		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method call requires the same connected session used to validate metadata"))
-	}
-	if readOnly {
-		a.methodExecutionMu.RUnlock()
-		return a.methodCallFailure(objectNodeID, methodNodeID, fmt.Errorf("Method call is blocked while Read-Only Mode is active"))
-	}
-
-	result, err := client.CallMethod(a.ctx, objectNodeID, methodNodeID, inputs)
-	a.methodExecutionMu.RUnlock()
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Method call failed for Object Node %s Method Node %s: transport or session failure", objectNodeID, methodNodeID))
-		return opcua.MethodCallResult{}, err
-	}
-	a.appendLog("info", fmt.Sprintf("Method call completed for Object Node %s Method Node %s StatusCode=%s", objectNodeID, methodNodeID, result.StatusCode))
-	return result, nil
-}
-
-func (a *App) methodCallFailure(objectNodeID, methodNodeID string, err error) (opcua.MethodCallResult, error) {
-	a.appendLog("error", fmt.Sprintf("Method call failed for Object Node %s Method Node %s: %v", objectNodeID, methodNodeID, err))
-	return opcua.MethodCallResult{}, err
-}
-
-func (a *App) InspectVariableNode(node opcua.AddressNode) error {
-	if node.NodeClass != "Variable" {
-		return a.ClearVariableNodeInspection()
-	}
-	a.appendLog("info", fmt.Sprintf("Inspecting Variable Node %s", node.NodeID))
-	a.mu.Lock()
-	requests := a.inspections.Select(node)
-	view := a.currentInspectionLocked()
-	a.mu.Unlock()
-	a.emitInspection(view)
-	a.executeInspectionRequests(requests)
-	return nil
-}
-
-func (a *App) ClearVariableNodeInspection() error {
-	a.mu.Lock()
-	requests := a.inspections.Unselect()
-	a.mu.Unlock()
-	a.emitInspection(nil)
-	a.executeInspectionRequests(requests)
-	return nil
-}
-
-func (a *App) WatchVariableNode(node opcua.AddressNode) error {
-	if node.NodeClass != "Variable" {
-		return fmt.Errorf("only Variable Nodes can be added to the Watchlist")
-	}
-	a.appendLog("info", fmt.Sprintf("Adding Variable Node %s to Watchlist", node.NodeID))
-	a.mu.Lock()
-	requests := a.inspections.Watch(node)
-	rows := a.watchlistLocked()
-	view := a.currentInspectionLocked()
-	a.mu.Unlock()
-	a.emitInspection(view)
-	a.emitWatchlistRows(rows)
-	a.executeInspectionRequests(requests)
-	return nil
-}
-
-func (a *App) UnwatchVariableNode(nodeID string) error {
-	a.appendLog("info", fmt.Sprintf("Removing Variable Node %s from Watchlist", nodeID))
-	a.mu.Lock()
-	requests := a.inspections.Unwatch(nodeID)
-	rows := a.watchlistLocked()
-	view := a.currentInspectionLocked()
-	a.mu.Unlock()
-	a.emitInspection(view)
-	a.emitWatchlistRows(rows)
-	a.executeInspectionRequests(requests)
-	return nil
-}
-
-func (a *App) GetWatchlist() []WatchlistRowView {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.watchlistLocked()
-}
-
-func (a *App) GetSessionTrend(focusedNodeID string) session.SessionTrendView {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.inspections.SessionTrend(focusedNodeID)
-}
-
-func (a *App) RefreshVariableNodeValue(nodeID string) error {
-	if strings.TrimSpace(nodeID) == "" {
-		a.mu.Lock()
-		selected, ok := a.inspections.Selected()
-		a.mu.Unlock()
-		if !ok {
-			return fmt.Errorf("no Variable Node selected")
-		}
-		nodeID = selected.Node.NodeID
-	}
-	a.appendLog("info", fmt.Sprintf("Refreshing Live Value for Variable Node %s", nodeID))
-	value, err := a.client.ReadValue(a.ctx, nodeID)
-	a.applyReadBack(nodeID, value, err)
-	return err
-}
-
-func (a *App) WriteVariableNodeValue(request VariableNodeWriteRequest) (VariableNodeWriteResult, error) {
-	nodeID := strings.TrimSpace(request.NodeID)
-	if nodeID == "" {
-		return VariableNodeWriteResult{}, fmt.Errorf("Variable Node Write requires a node ID")
-	}
-	a.appendLog("info", fmt.Sprintf("Variable Node Write attempted for %s target %q", nodeID, request.TargetValue))
-	inspection, err := a.prepareVariableNodeWrite(nodeID)
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Variable Node Write failed for %s: %v", nodeID, err))
-		return VariableNodeWriteResult{}, err
-	}
-	target, err := opcua.ParseScalarValue(inspection.Details.DataType, request.TargetValue)
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Variable Node Write failed for %s: %v", nodeID, err))
-		return VariableNodeWriteResult{}, err
-	}
-	if err := a.client.WriteValue(a.ctx, nodeID, target); err != nil {
-		a.appendLog("error", fmt.Sprintf("Variable Node Write failed for %s: %v", nodeID, err))
-		return VariableNodeWriteResult{}, err
-	}
-	a.appendLog("info", fmt.Sprintf("Variable Node Write accepted for %s target %q", nodeID, target.Normalized))
-	readBack, readErr := a.client.ReadValue(a.ctx, nodeID)
-	a.appendLog("info", fmt.Sprintf("Variable Node Write read-back for %s: value=%q status=%s", nodeID, readBack.Value, readBack.Status))
-	a.applyReadBack(nodeID, readBack, readErr)
-	if readErr != nil {
-		a.appendLog("error", fmt.Sprintf("Variable Node Write failed for %s: read-back failed: %v", nodeID, readErr))
-		return VariableNodeWriteResult{}, readErr
-	}
-	result := VariableNodeWriteResult{NodeID: nodeID, TargetValue: target.Normalized, Status: "success", ReadBack: readBack}
-	if !scalarReadBackMatches(target, readBack.Value) {
-		result.Status = "warning"
-		result.Warning = fmt.Sprintf("read-back mismatch: target %q but server returned %q", target.Normalized, readBack.Value)
-	}
-	return result, nil
-}
-
-func (a *App) prepareVariableNodeWrite(nodeID string) (session.VariableNodeInspection, error) {
-	a.mu.Lock()
-	connected := a.connected
-	readOnly := a.readOnlyMode
-	inspection, ok := a.inspections.Inspection(nodeID)
-	a.mu.Unlock()
-	if !connected {
-		return session.VariableNodeInspection{}, fmt.Errorf("Variable Node Write requires a connected session")
-	}
-	if readOnly {
-		return session.VariableNodeInspection{}, fmt.Errorf("Variable Node Write is blocked while Read-Only Mode is active")
-	}
-	if !ok {
-		return session.VariableNodeInspection{}, fmt.Errorf("Variable Node Write requires an active Variable Node Inspection or Watchlist row")
-	}
-	if inspection.Stale || inspection.Err != nil || inspection.Value.NodeID == "" {
-		return session.VariableNodeInspection{}, fmt.Errorf("Variable Node Write is blocked because the current Live Value is stale or unavailable")
-	}
-	details, err := a.client.ReadNodeDetails(a.ctx, nodeID)
-	a.mu.Lock()
-	a.inspections.ApplyDetails(nodeID, details, err)
-	inspection, _ = a.inspections.Inspection(nodeID)
-	view := a.currentInspectionLocked()
-	rows := a.watchlistLocked()
-	a.mu.Unlock()
-	a.emitInspection(view)
-	a.emitWatchlistRows(rows)
-	if err != nil {
-		return session.VariableNodeInspection{}, err
-	}
-	if err := validateVariableNodeWriteDetails(details); err != nil {
-		return session.VariableNodeInspection{}, err
-	}
-	inspection.Details = details
-	return inspection, nil
-}
-
-func validateVariableNodeWriteDetails(details opcua.NodeDetails) error {
-	if details.ValueRank != "" && details.ValueRank != "Scalar" {
-		return fmt.Errorf("Variable Node Write does not support arrays or non-scalar ValueRank %q", details.ValueRank)
-	}
-	if !details.Writable {
-		return fmt.Errorf("Variable Node %s is not writable in this session", details.NodeID)
-	}
-	if _, err := opcua.ParseScalarValue(details.DataType, zeroValueForDataType(details.DataType)); err != nil {
-		return err
-	}
-	return nil
-}
-
-func zeroValueForDataType(dataType string) string {
-	if dataType == "Boolean" {
-		return "false"
-	}
-	return "0"
-}
-
-func scalarReadBackMatches(target opcua.ScalarValue, readBack string) bool {
-	parsed, err := opcua.ParseScalarValue(target.DataType, readBack)
-	if err != nil {
-		return false
-	}
-	return parsed.Normalized == target.Normalized
-}
-
-func (a *App) applyReadBack(nodeID string, value opcua.LiveValue, err error) {
-	a.mu.Lock()
-	requests := a.inspections.ApplyLiveValue(nodeID, value, err)
-	view := a.currentInspectionLocked()
-	rows := a.watchlistLocked()
-	a.mu.Unlock()
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Refresh Live Value failed for %s: %v", nodeID, err))
-	}
-	a.emitInspection(view)
-	a.emitWatchlistRows(rows)
-	if err == nil {
-		a.scheduleSessionTrendUpdate()
-	}
-	a.executeInspectionRequests(requests)
-}
-
-func (a *App) GetDiagnosticLogs() []DiagnosticLogEntry {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	logs := make([]DiagnosticLogEntry, len(a.logs))
-	copy(logs, a.logs)
-	return logs
-}
-
-func (a *App) executeInspectionRequests(requests []session.Request) {
-	for _, request := range requests {
-		req := request
-		switch req.Kind {
-		case session.RequestSubscribeValue:
-			go a.subscribeValue(req.NodeID)
-		case session.RequestReadDetails:
-			go a.readNodeDetails(req.NodeID)
-		case session.RequestCancelSubscription:
-			if req.Subscription != nil {
-				_ = req.Subscription.Cancel(a.ctx)
-			}
-		}
-	}
-}
-
-func (a *App) subscribeValue(nodeID string) {
-	updates, subscription, err := a.client.SubscribeValue(a.ctx, nodeID)
-	a.mu.Lock()
-	requests := a.inspections.ApplySubscription(nodeID, updates, subscription, err)
-	view := a.currentInspectionLocked()
-	rows := a.watchlistLocked()
-	a.mu.Unlock()
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Subscribe failed for %s: %v", nodeID, err))
-	}
-	a.emitInspection(view)
-	a.emitWatchlistRows(rows)
-	a.executeInspectionRequests(requests)
-	if err != nil || updates == nil {
-		return
-	}
-	for value := range updates {
-		a.mu.Lock()
-		requests := a.inspections.ApplyLiveValue(nodeID, value, nil)
-		view := a.currentInspectionLocked()
-		rows := a.watchlistLocked()
-		a.mu.Unlock()
-		a.emitInspection(view)
-		a.emitWatchlistRows(rows)
-		a.scheduleSessionTrendUpdate()
-		a.executeInspectionRequests(requests)
-	}
-}
-
-func (a *App) readNodeDetails(nodeID string) {
-	details, err := a.client.ReadNodeDetails(a.ctx, nodeID)
-	a.mu.Lock()
-	a.inspections.ApplyDetails(nodeID, details, err)
-	view := a.currentInspectionLocked()
-	rows := a.watchlistLocked()
-	a.mu.Unlock()
-	if err != nil {
-		a.appendLog("error", fmt.Sprintf("Read details failed for %s: %v", nodeID, err))
-	}
-	a.emitInspection(view)
-	a.emitWatchlistRows(rows)
-}
-
-func (a *App) currentInspectionLocked() *VariableNodeInspectionView {
-	inspection, ok := a.inspections.Selected()
-	if !ok {
-		return nil
-	}
-	view := inspectionView(inspection)
-	return &view
-}
-
-func inspectionView(inspection session.VariableNodeInspection) VariableNodeInspectionView {
-	view := VariableNodeInspectionView{
-		Node:           inspection.Node,
-		Value:          inspection.Value,
-		Details:        inspection.Details,
-		Subscribing:    inspection.Subscribing,
-		LoadingDetails: inspection.LoadingDetails,
-		Stale:          inspection.Stale,
-		OutOfRange:     inspection.OutOfRange,
-		UpdateCount:    inspection.UpdateCount,
-		Watched:        inspection.Watched,
-	}
-	if inspection.Err != nil {
-		view.Error = inspection.Err.Error()
-	}
-	if inspection.DetailsErr != nil {
-		view.DetailsError = inspection.DetailsErr.Error()
-	}
-	return view
-}
-
-func watchlistRowView(inspection session.VariableNodeInspection) WatchlistRowView {
-	row := WatchlistRowView{
-		Node:            inspection.Node,
-		Value:           inspection.Value,
-		DataType:        inspection.Details.DataType,
-		EngineeringUnit: inspection.Details.EngineeringUnit,
-		Stale:           inspection.Stale,
-		OutOfRange:      inspection.OutOfRange,
-		UpdateCount:     inspection.UpdateCount,
-	}
-	if inspection.Err != nil {
-		row.Error = inspection.Err.Error()
-	}
-	if inspection.DetailsErr != nil {
-		row.DetailsError = inspection.DetailsErr.Error()
-	}
-	return row
-}
-
-func (a *App) watchlistLocked() []WatchlistRowView {
-	watched := a.inspections.Watched()
-	rows := make([]WatchlistRowView, 0, len(watched))
-	for _, inspection := range watched {
-		rows = append(rows, watchlistRowView(inspection))
-	}
-	return rows
-}
-
-func (a *App) emitInspection(view *VariableNodeInspectionView) {
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, eventVariableInspectionUpdated, view)
-	}
-}
-
-func (a *App) emitWatchlist() {
-	a.mu.Lock()
-	rows := a.watchlistLocked()
-	a.mu.Unlock()
-	a.emitWatchlistRows(rows)
-}
-
-func (a *App) emitWatchlistRows(rows []WatchlistRowView) {
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, eventWatchlistUpdated, rows)
-	}
-}
-
-func (a *App) scheduleSessionTrendUpdate() {
-	a.mu.Lock()
-	if a.trendNotifyPending {
-		a.mu.Unlock()
-		return
-	}
-	a.trendNotifyPending = true
-	a.mu.Unlock()
-	time.AfterFunc(250*time.Millisecond, func() {
-		a.mu.Lock()
-		a.trendNotifyPending = false
-		a.mu.Unlock()
-		a.emitSessionTrendUpdated()
-	})
-}
-
-func (a *App) emitSessionTrendUpdated() {
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, eventSessionTrendUpdated)
-	}
-}
-
-func (a *App) sessionSafetyLocked() SessionSafetyView {
-	return SessionSafetyView{Connected: a.connected, ReadOnlyMode: a.readOnlyMode}
-}
-
-func (a *App) emitSessionSafetyUpdated(view SessionSafetyView) {
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, eventSessionSafetyUpdated, view)
-	}
-}
-
-func (a *App) appendLog(level, message string) {
-	entry := DiagnosticLogEntry{Timestamp: time.Now().Format(time.RFC3339), Level: level, Message: message}
-	a.mu.Lock()
-	a.logs = append(a.logs, entry)
-	if len(a.logs) > 500 {
-		a.logs = a.logs[len(a.logs)-500:]
-	}
-	a.mu.Unlock()
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, eventDiagnosticLogAppended, entry)
-	}
+func variableNodeWriteResult(result application.VariableNodeWriteResult) VariableNodeWriteResult {
+	return VariableNodeWriteResult(result)
 }
